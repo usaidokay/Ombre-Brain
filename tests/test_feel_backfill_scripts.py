@@ -54,6 +54,7 @@ async def test_apply_feel_comment_backfill_adds_comment_with_origin(test_config,
         bucket_type="feel",
         valence=0.81,
         arousal=0.36,
+        created="2026-05-01T12:34:56+00:00",
     )
     mapping_path = tmp_path / "mapping.json"
     mapping_path.write_text(
@@ -77,6 +78,8 @@ async def test_apply_feel_comment_backfill_adds_comment_with_origin(test_config,
     assert results[0]["status"] == "applied"
     assert source["metadata"]["comment_count"] == 1
     assert source["metadata"]["comments"][0]["original_feel_id"] == feel_id
+    assert source["metadata"]["comments"][0]["created"] == "2026-05-01T12:34:56+00:00"
+    assert source["metadata"]["comments"][0]["original_feel_created"] == "2026-05-01T12:34:56+00:00"
     assert source["metadata"]["comments"][0]["source"] == "feel_comment_backfill"
     assert source["metadata"]["model_valence"] == 0.81
     assert source["metadata"]["activation_count"] == 1

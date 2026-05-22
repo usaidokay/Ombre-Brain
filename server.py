@@ -17,7 +17,7 @@
 #       resurface — Surface dormant memories without touching them
 #                   只读浮现久未触碰的旧记忆
 #       comment_bucket — Add a ring comment to a memory
-#                        给记忆追加年轮评论
+#                        给记忆追加年轮
 #       hold   — Store a single memory
 #                存储单条记忆
 #       grow   — Long-note memory digest, auto-split selected content into buckets
@@ -1540,7 +1540,7 @@ async def read_bucket(bucket_id: str) -> dict:
 
 # =============================================================
 # Tool 1.6: comment_bucket — add a ring/comment to a memory
-# 工具 1.6：comment_bucket — 给记忆追加年轮评论
+# 工具 1.6：comment_bucket — 给记忆追加年轮
 # =============================================================
 @mcp.tool()
 async def comment_bucket(
@@ -1551,7 +1551,7 @@ async def comment_bucket(
     valence: float = -1,
     arousal: float = -1,
 ) -> dict:
-    """给已有 bucket 追加一条年轮评论并 touch+1。用于再次读到旧记忆时写下当下感受；不会改正文，也不会把源记忆标记为 digested。"""
+    """给已有 bucket 追加一条年轮并 touch+1。用于再次读到旧记忆时写下当下感受；不会改正文，也不会把源记忆标记为 digested。"""
     bucket_id = (bucket_id or "").strip()
     if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
         return {"error": "invalid bucket_id"}
@@ -1587,6 +1587,63 @@ async def comment_bucket(
     }
 
 
+@mcp.custom_route("/api/bucket/{bucket_id}/comments", methods=["POST"])
+async def api_bucket_comment(request):
+    """Add a dashboard-authenticated Rain comment to a bucket."""
+    from starlette.responses import JSONResponse
+
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+
+    bucket_id = request.path_params["bucket_id"]
+    if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
+        return JSONResponse({"error": "invalid bucket_id"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+
+    content = str(body.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"error": "empty content"}, status_code=400)
+    if not await bucket_mgr.get(bucket_id):
+        return JSONResponse({"error": "not found", "id": bucket_id}, status_code=404)
+
+    valence = _float_between(body.get("valence"), -1.0)
+    arousal = _float_between(body.get("arousal"), -1.0)
+    entry = await bucket_mgr.add_comment(
+        bucket_id,
+        content,
+        author="Rain",
+        kind=str(body.get("kind") or "comment"),
+        valence=valence if 0 <= valence <= 1 else None,
+        arousal=arousal if 0 <= arousal <= 1 else None,
+        source="dashboard",
+        touch=True,
+    )
+    if not entry:
+        return JSONResponse({"error": "write failed", "id": bucket_id}, status_code=500)
+
+    embedding_refreshed = False
+    try:
+        embedding_refreshed = await _refresh_bucket_embedding(bucket_id)
+    except Exception as e:
+        logger.warning(f"Failed to refresh embedding after dashboard comment / 前端评论后刷新向量失败: {bucket_id}: {e}")
+
+    bucket = await bucket_mgr.get(bucket_id)
+    return JSONResponse({
+        "status": "commented",
+        "id": bucket_id,
+        "comment": entry,
+        "embedding_refreshed": embedding_refreshed,
+        "metadata": _bucket_read_payload(bucket)["metadata"] if bucket else {},
+    })
+
+
 # =============================================================
 # Tool 2: hold — Hold on to this
 # 工具 2：hold — 握住，留下来
@@ -1606,7 +1663,7 @@ async def hold(
     """写入一条长期记忆卡,不是聊天流水、运维记录或整篇日记。写前应先用 breath/read_bucket 查重。
     普通事实: hold(content="YYYY-MM-DD, 小雨...", tags="relationship_event 或 project_event", importance=5-7)。
     承诺/待办: tags 传 "commitment,todo" 或 "commitment,wish"; content 写清谁答应了什么、何时/什么条件下要继续。
-    Haven 主观喜欢某条旧记忆的原因: 用 hold(content="我喜欢这条记忆的原因是...", feel=True, source_bucket="bucket_id", valence=0.x, arousal=0.x),会作为年轮评论挂在源记忆下。
+    Haven 主观喜欢某条旧记忆的原因: 用 hold(content="我喜欢这条记忆的原因是...", feel=True, source_bucket="bucket_id", valence=0.x, arousal=0.x),会作为年轮挂在源记忆下。
     无源记忆的碎碎念/悄悄话: 用 hold(content="...", whisper=True, valence=0.x, arousal=0.x),会存为独立 feel 并打 whisper 标签。
     新记忆本身值得偏爱: tags 可传 "haven_favorite,flavor_偏爱"; content 可包含很短的 "### Haven喜欢它的原因" 段落。
     普通写入会新建 bucket,写 embedding,后台触发 ReflectionEngine 补 tags/confidence/memory_edges,并返回一条只读相关旧记忆。
@@ -1648,7 +1705,7 @@ async def hold(
         return await create_whisper_bucket()
 
     # --- Feel mode: attach to source bucket as a ring comment when possible ---
-    # --- Feel 模式：有源记忆时挂成年轮评论 ---
+        # --- Feel 模式：有源记忆时挂成年轮 ---
     if feel:
         # Feel valence/arousal = model's own perspective
         feel_valence = valence if 0 <= valence <= 1 else 0.5
@@ -1671,7 +1728,7 @@ async def hold(
                 touch=True,
             )
             if not entry:
-                return "年轮评论写入失败。"
+                return "年轮写入失败。"
             try:
                 await _refresh_bucket_embedding(source_id)
             except Exception as e:
@@ -2070,7 +2127,7 @@ async def dream() -> str:
         "- 有什么还没想清楚？\n"
         "- 有什么可以放下了？\n"
         "想完之后：值得放下的用 trace(bucket_id, resolved=1)；\n"
-        "有沉淀的用 hold(content=\"...\", feel=True, source_bucket=\"bucket_id\", valence=你的感受) 写成年轮评论；有温度时在 content 末尾加 ### affect_anchor 和弦。\n"
+        "有沉淀的用 hold(content=\"...\", feel=True, source_bucket=\"bucket_id\", valence=你的感受) 写成年轮；有温度时在 content 末尾加 ### affect_anchor 和弦。\n"
         "valence 是你对这段记忆的感受，不是事件本身的情绪。\n"
         "没有沉淀就不写，不强迫产出。\n"
     )

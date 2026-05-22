@@ -40,10 +40,11 @@ class DummyDehydrator:
 
 
 class DummyRequest:
-    def __init__(self, body=None, headers=None, cookies=None):
+    def __init__(self, body=None, headers=None, cookies=None, path_params=None):
         self._body = body
         self.headers = headers or {}
         self.cookies = cookies or {}
+        self.path_params = path_params or {}
 
     async def json(self):
         return self._body
@@ -161,6 +162,39 @@ async def test_comment_bucket_adds_ring_and_touches_source(monkeypatch, bucket_m
     assert bucket["metadata"]["last_active"] != "2026-05-04T08:00:00+00:00"
     assert embedding_engine.calls[0][0] == bucket_id
     assert "现在再看到它" in embedding_engine.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_comment_api_writes_rain_author(monkeypatch, bucket_mgr, decay_eng):
+    import server
+
+    bucket_id = await bucket_mgr.create(
+        content="小雨想在前端补一句评论。",
+        name="前端评论",
+        domain=["恋爱"],
+    )
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "decay_engine", decay_eng)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    embedding_engine = CapturingEmbeddingEngine()
+    monkeypatch.setattr(server, "embedding_engine", embedding_engine)
+
+    response = await server.api_bucket_comment(
+        DummyRequest(
+            {"content": "这句是小雨从前端补的。", "author": "Haven"},
+            path_params={"bucket_id": bucket_id},
+        )
+    )
+    payload = json.loads(response.body)
+    bucket = await bucket_mgr.get(bucket_id)
+    comment = bucket["metadata"]["comments"][0]
+
+    assert response.status_code == 200
+    assert payload["status"] == "commented"
+    assert comment["author"] == "Rain"
+    assert comment["source"] == "dashboard"
+    assert comment["content"] == "这句是小雨从前端补的。"
+    assert embedding_engine.calls[0][0] == bucket_id
 
 
 @pytest.mark.asyncio
@@ -306,7 +340,7 @@ async def test_hold_returns_readonly_related_memory_without_merging(monkeypatch,
     import server
 
     old_id = await bucket_mgr.create(
-        content="小雨和 Haven 在旧窗口讨论过年轮评论，想让记忆下面挂不同时间的感受。",
+        content="小雨和 Haven 在旧窗口讨论过年轮，想让记忆下面挂不同时间的感受。",
         name="旧年轮设想",
         tags=["年轮"],
         domain=["恋爱"],
@@ -320,7 +354,7 @@ async def test_hold_returns_readonly_related_memory_without_merging(monkeypatch,
     monkeypatch.setattr(server, "_queue_memory_enrichment", lambda bucket_id: None)
 
     result = await server.hold(
-        content="小雨决定把年轮评论先落地，让旧记忆读到时可以多一层当下感受。",
+        content="小雨决定把年轮先落地，让旧记忆读到时可以多一层当下感受。",
         tags="年轮",
         importance=6,
     )

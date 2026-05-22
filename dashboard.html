@@ -320,6 +320,25 @@
     color: var(--text-light);
     margin-bottom: 6px;
   }
+  .comment-form {
+    margin-top: 14px;
+  }
+  .comment-form textarea {
+    width: 100%;
+    min-height: 78px;
+    resize: vertical;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-solid);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.6;
+    box-sizing: border-box;
+  }
+  .comment-form button {
+    margin-top: 8px;
+  }
 
   .config-section {
     margin-bottom: 28px;
@@ -1331,7 +1350,7 @@ async function showDetail(id) {
     var meta = b.metadata || {};
     var comments = Array.isArray(meta.comments) ? meta.comments : [];
     var commentsHtml = comments.length
-      ? '<div class="detail-comments"><h3>年轮评论</h3>' + comments.map(function(c) {
+      ? '<div class="detail-comments"><h3>年轮</h3>' + comments.map(function(c) {
           var va = c.valence != null ? ' · V' + Number(c.valence).toFixed(2) : '';
           var ar = c.arousal != null ? ' · A' + Number(c.arousal).toFixed(2) : '';
           return '<div class="comment-item">' +
@@ -1340,6 +1359,11 @@ async function showDetail(id) {
           '</div>';
         }).join('') + '</div>'
       : '';
+    var commentFormHtml =
+      '<form class="comment-form" onsubmit="submitBucketComment(event, \'' + id + '\')">' +
+        '<textarea name="content" placeholder="写一圈新的年轮…"></textarea>' +
+        '<button type="submit" class="btn">写入年轮</button>' +
+      '</form>';
     content.innerHTML =
       '<h2>' + esc(meta.name || id) + '</h2>' +
       '<div class="detail-meta">' +
@@ -1364,9 +1388,39 @@ async function showDetail(id) {
         '<div class="field"><label>最后活跃</label>' + (meta.last_active || '—') + '</div>' +
       '</div>' +
       '<div class="detail-content">' + esc(b.content) + '</div>' +
-      commentsHtml;
+      commentsHtml +
+      commentFormHtml;
   } catch (e) {
     content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+async function submitBucketComment(event, bucketId) {
+  event.preventDefault();
+  var form = event.target;
+  var textarea = form.querySelector('textarea[name="content"]');
+  var content = (textarea.value || '').trim();
+  if (!content) return;
+  var button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = '写入中…';
+  try {
+    var res = await authFetch(BASE + '/api/bucket/' + bucketId + '/comments', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content: content})
+    });
+    if (!res) return;
+    if (!res.ok) {
+      var data = await res.json().catch(() => ({}));
+      throw new Error(data.error || '写入失败');
+    }
+    await showDetail(bucketId);
+    await loadBuckets();
+  } catch (e) {
+    alert('写入年轮失败: ' + e.message);
+    button.disabled = false;
+    button.textContent = '写入年轮';
   }
 }
 

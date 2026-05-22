@@ -958,8 +958,8 @@ breath(query="今天很累")
 | `breath` | 浮现或检索记忆。无参数=推送未解决记忆；有参数=关键词+向量语义双通道检索。支持 `include_related / related_per_memory / edge_min_confidence` 沿显式关系边带出一跳关联记忆；支持 `include_core / core_limit` 控制 pinned/protected 核心记忆数量 / Surface or search memories. Can include one-hop related memories from explicit edges and limit core pinned/protected memories |
 | `resurface` | 只读浮现久未触碰的旧记忆，默认包含归档桶；越久没碰过越靠前，不刷新 `last_active` / Read-only dormant-memory resurfacing |
 | `read_bucket` | 按 `bucket_id` 精确读取完整正文和元数据，不触碰 `last_active`，用于“我知道是哪一条，直接读这一条”的场景 / Exact full bucket read by id without refreshing activation |
-| `comment_bucket` | 给已有 bucket 追加年轮评论并 `touch+1`，不改正文，不标 `digested` / Add a ring comment to an existing bucket |
-| `hold` | 存储单条记忆，自动打标+生成 embedding，并返回一条只读相关旧记忆；`feel=True + source_bucket` 会写成年轮评论 / Store a single memory and return one read-only related old memory; source-bound feels become ring comments |
+| `comment_bucket` | 给已有 bucket 追加年轮并 `touch+1`，不改正文，不标 `digested` / Add a ring comment to an existing bucket |
+| `hold` | 存储单条记忆，自动打标+生成 embedding，并返回一条只读相关旧记忆；`feel=True + source_bucket` 会写成年轮 / Store a single memory and return one read-only related old memory; source-bound feels become ring comments |
 | `grow` | 长内容摘记：仅在明确需要整理长期记忆时，把筛选后的长内容拆成多个记忆桶并生成 embedding；不要默认拆整篇日记 / Long-note memory digest for selected durable content, not automatic whole-diary import |
 | `trace` | 修改元数据、标记已解决、删除；`anchor=1` 标为长期锚点，默认最多 24 条且需放置一段时间后再标 / Modify metadata, mark resolved, anchor, or delete |
 | `pulse` | 系统状态 + 所有记忆桶列表 / System status + bucket listing |
@@ -1182,7 +1182,7 @@ $$emotion\_weight = base + arousal \times arousal\_boost$$
 At the start of each conversation, Claude runs `dream()` — reads recent memory buckets and reflects in first person: what still carries weight? What can be let go?
 
 - 值得放下的 → `trace(resolved=1)` 让它沉底
-- 有沉淀的 → 对源记忆写年轮评论，记录模型自己的感受
+- 有沉淀的 → 对源记忆写年轮，记录模型自己的感受
 - 没有沉淀就不写，不强迫产出
 
 ### Feel — 带走的东西

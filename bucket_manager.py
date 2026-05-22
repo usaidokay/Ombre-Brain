@@ -365,11 +365,12 @@ class BucketManager:
         valence: float | None = None,
         arousal: float | None = None,
         source: str | None = None,
+        created: str | None = None,
         touch: bool = True,
     ) -> Optional[dict]:
         """
         Append a ring/comment to an existing bucket without changing its body.
-        给已有桶追加年轮评论，不改正文。
+        给已有桶追加年轮，不改正文。
         """
         file_path = self._find_bucket_file(bucket_id)
         if not file_path or not content or not str(content).strip():
@@ -386,9 +387,10 @@ class BucketManager:
             comments = []
 
         now = now_iso()
+        created_at = str(created or now).strip() or now
         entry = {
             "id": generate_bucket_id(),
-            "created": now,
+            "created": created_at,
             "author": str(author or "Haven"),
             "kind": str(kind or "comment"),
             "content": str(content).strip(),
@@ -423,7 +425,7 @@ class BucketManager:
                 current_time = datetime.now(timezone.utc).replace(tzinfo=None)
             await self._time_ripple(bucket_id, current_time)
 
-        logger.info(f"Added bucket comment / 已追加年轮评论: {bucket_id}#{entry['id']}")
+        logger.info(f"Added bucket comment / 已追加年轮: {bucket_id}#{entry['id']}")
         return entry
 
     # ---------------------------------------------------------

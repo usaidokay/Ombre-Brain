@@ -207,6 +207,7 @@ async def apply_actions(
             valence=action.get("valence"),
             arousal=action.get("arousal"),
             source="feel_comment_backfill",
+            created=action.get("feel_created"),
             touch=True,
         )
         if not entry:
@@ -223,6 +224,8 @@ async def apply_actions(
                     if isinstance(comment, dict) and comment.get("id") == entry["id"]:
                         comment["original_feel_id"] = action["feel_id"]
                         comment["original_feel_created"] = action.get("feel_created")
+                        if action.get("feel_created"):
+                            comment["created"] = action["feel_created"]
                         break
                 await mgr.update(
                     action["source_bucket_id"],
