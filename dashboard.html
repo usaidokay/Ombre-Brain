@@ -1487,25 +1487,30 @@
       </div>
       <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">留空不改。不会持久化到 yaml（请用 OMBRE_DREAM_API_KEY）</div>
       <div class="config-row">
-        <label>每日小时</label>
+        <label>几点做梦</label>
         <input type="number" id="cfg-dream-hour" min="0" max="23" />
       </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">东八区小时。默认 3，就是凌晨 3 点后检查一次</div>
       <div class="config-row">
         <label>做梦概率</label>
         <input type="number" id="cfg-dream-prob" min="0" max="1" step="0.05" />
       </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">0 到 1。0.4 表示素材够时有 40% 概率做梦</div>
       <div class="config-row">
-        <label>素材条数</label>
+        <label>至少几条素材</label>
         <input type="number" id="cfg-dream-min" min="1" max="20" />
       </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">最近记忆和 whisper 加起来不够这个数，就先不做梦</div>
       <div class="config-row">
-        <label>素材窗口</label>
+        <label>回看几小时</label>
         <input type="number" id="cfg-dream-window" min="1" max="168" />
       </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 48，就是只看最近两天的记忆和 whisper</div>
       <div class="config-row">
         <label>人格锚点</label>
         <input type="text" id="cfg-dream-anchor" placeholder="c0b8ddb7423e" />
       </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">只用来固定是谁在做梦，不会直接当作梦的剧情素材</div>
     </div>
 
     <div class="config-section">
