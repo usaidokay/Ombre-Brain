@@ -137,16 +137,26 @@ gateway:
   # Optional multi-upstream mode / 可选多上游模式
   # When upstreams is set, the gateway aggregates all listed models and routes
   # each request by model name to the matching upstream.
+  # Dict model entries can expose a gateway alias while sending the real model
+  # name to upstream.
   # 配置 upstreams 后，网关会聚合所有模型，并按模型名路由到对应上游。
+  # models 可用字典写别名：id 是客户端看到的名字，upstream_model 是发给上游的真实名字。
   # upstreams:
   #   - name: "deepseek"
   #     base_url: "https://api.deepseek.com/v1"
   #     api_key_env: "OMBRE_GATEWAY_DEEPSEEK_API_KEY"
+  #     # Optional fallback keys. Retryable errors switch to the next key.
+  #     # 可选备用 key。遇到可重试错误时自动换下一个 key。
+  #     # api_key_envs:
+  #     #   - "OMBRE_GATEWAY_DEEPSEEK_API_KEY_1"
+  #     #   - "OMBRE_GATEWAY_DEEPSEEK_API_KEY_2"
   #     default_model: "deepseek-chat"
   #     prompt_cache: ""  # DeepSeek uses automatic prefix cache / DeepSeek 使用自动前缀缓存
   #     models:
   #       - "deepseek-chat"
   #       - "deepseek-reasoner"
+  #       - id: "deepseek-a/deepseek-v4"
+  #         upstream_model: "deepseek-v4"
   #   - name: "siliconflow"
   #     base_url: "https://api.siliconflow.cn/v1"
   #     api_key_env: "OMBRE_GATEWAY_SILICONFLOW_API_KEY"
@@ -183,6 +193,7 @@ gateway:
   high_confidence_keyword_score: 0.65
   high_confidence_cooldown_floor: 0.8
   edge_min_confidence: 0.55
+  upstream_key_cooldown_seconds: 300
   # Env vars:
   #   OMBRE_GATEWAY_TOKEN
   #   OMBRE_GATEWAY_UPSTREAM_API_KEY
@@ -190,6 +201,8 @@ gateway:
   #   OMBRE_GATEWAY_UPSTREAM_MODEL
   #   OMBRE_GATEWAY_UPSTREAM_MODELS   # comma-separated model list for /v1/models
   #   OMBRE_GATEWAY_DEEPSEEK_API_KEY  # example for gateway.upstreams[*].api_key_env
+  #   OMBRE_GATEWAY_DEEPSEEK_API_KEY_1
+  #   OMBRE_GATEWAY_DEEPSEEK_API_KEY_2
   #   OMBRE_GATEWAY_SILICONFLOW_API_KEY
 
 # --- Persona State Engine / 人格状态引擎 ---

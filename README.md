@@ -37,7 +37,7 @@
 | 自动记忆注入 | 请求转发前按策略注入 Recent Context、Recalled Memory、Related Memory；Current Inner State / Relationship Weather 按间隔出现 | `gateway.py` |
 | Persona State Engine | 保存 AI 回复后的全局人格、关系状态、每个 session 的短期心情 | `persona_engine.py` |
 | 召回冷却 | 按 `X-Ombre-Session-Id` 记录轮次和最近注入，避免同一条记忆反复贴脸 | `gateway_state.py` |
-| 多上游模型路由 | `gateway.upstreams` 可配置多个 OpenAI-compatible provider，按请求里的 `model` 路由 | `gateway.py`、`config.example.yaml` |
+| 多上游模型路由和备用 key | `gateway.upstreams` 可配置多个 OpenAI-compatible provider，按请求里的 `model` 路由；同一上游可配置多个 key，失败时自动尝试下一个 | `gateway.py`、`config.example.yaml` |
 | 工具调用和流式兼容 | 透传 `tools / tool_choice / tool_calls`，支持 SSE 流式响应，兼容部分 reasoning_content 场景 | `gateway.py` |
 | Memory Edge | 自动生成显式记忆关系边，Gateway 和 `breath()` 可补一跳相关记忆 | `memory_edges.py`、`reflection_engine.py` |
 | 长期锚点 Anchor | 介于普通浮现和 pinned/permanent 之间的长期记忆位。`anchor=true` 的普通 bucket 不混入普通权重池，`breath()` 会用独立槽位少量带出，适合经过时间验证、未来仍需要被想起的关系锚点或项目锚点 | `server.py`、`dashboard.html` |
@@ -154,7 +154,7 @@ cp config.example.yaml /srv/ombre-brain/config.yaml
 
 编辑 `/srv/ombre-brain/config.yaml`：
 
-- `gateway.upstreams`：配置上游 OpenAI-compatible provider。
+- `gateway.upstreams`：配置上游 OpenAI-compatible provider；同一上游多个 key 用 `api_key_envs`。
 - `gateway.default_session_id`：少数兼容路由没传 `X-Ombre-Session-Id` 时的默认房间名，通用部署不要照抄旧示例名。
 - `identity.*`：改 AI 名、前端用户作者名、prompt 里的用户称呼和亲密称呼。
 - `persona.profile_id`：改成自己的稳定 id，避免和示例部署共用同一份 Persona 状态身份。
@@ -172,6 +172,7 @@ OMBRE_EMBEDDING_API_KEY=
 OMBRE_GATEWAY_TOKEN=
 
 OMBRE_GATEWAY_PROVIDER_A_API_KEY=
+OMBRE_GATEWAY_PROVIDER_A_API_KEY_2=
 OMBRE_GATEWAY_PROVIDER_B_API_KEY=
 OMBRE_PERSONA_API_KEY=
 OMBRE_REFLECTION_API_KEY=
@@ -186,6 +187,48 @@ OMBRE_CHATGPT_OAUTH_PUBLIC_BASE_URL=
 ```
 
 `MCP_BEARER_TOKEN` 只在接 RiJi/Haven-diary 摘记时需要；不接外部日记系统就不要配置 diary URL/token。
+
+### 上游模型和备用 key
+
+`gateway.upstreams` 可以配多个站点，也可以给同一个站点配多个 key。普通字符串模型名会原样转发：
+
+```yaml
+gateway:
+  upstreams:
+    - name: "provider-a"
+      base_url: "https://api.example.com/v1"
+      default_model: "model-a"
+      api_key_envs:
+        - "OMBRE_GATEWAY_PROVIDER_A_API_KEY"
+        - "OMBRE_GATEWAY_PROVIDER_A_API_KEY_2"
+      models:
+        - "model-a"
+        - "model-a-fast"
+```
+
+如果两个站点都有同名模型，用 `id` 暴露不同的客户端模型名，用 `upstream_model` 写上游真实模型名：
+
+```yaml
+gateway:
+  upstream_default_model: "site-a/deepseek-v4"
+  upstreams:
+    - name: "site-a"
+      base_url: "https://a.example.com/v1"
+      api_key_env: "OMBRE_GATEWAY_SITE_A_API_KEY"
+      models:
+        - id: "site-a/deepseek-v4"
+          upstream_model: "deepseek-v4"
+    - name: "site-b"
+      base_url: "https://b.example.com/v1"
+      api_key_env: "OMBRE_GATEWAY_SITE_B_API_KEY"
+      models:
+        - id: "site-b/deepseek-v4"
+          upstream_model: "deepseek-v4"
+```
+
+客户端请求 `site-b/deepseek-v4` 时，Gateway 会路由到 `site-b`，再把发给上游的 `model` 改成 `deepseek-v4`。
+
+Gateway 会按请求里的 `model` 找上游。遇到 `401/403/429/500/502/503/504` 或网络错误，会临时冷却当前 key，并尝试同上游的下一个 key。`400`、模型名错误、上下文太长这类请求本身的问题不会换 key。冷却时间由 `gateway.upstream_key_cooldown_seconds` 控制，默认 300 秒。
 
 ### Compose
 

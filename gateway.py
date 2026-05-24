@@ -29,6 +29,7 @@ from utils import count_tokens_approx, load_config, setup_logging, strip_wikilin
 
 logger = logging.getLogger("ombre_brain.gateway")
 FAVORITE_MEMORY_MARKER = "[[ombre:favorite]]"
+RETRYABLE_UPSTREAM_STATUS_CODES = {401, 403, 429, 500, 502, 503, 504}
 
 
 class GatewayService:
@@ -124,6 +125,10 @@ class GatewayService:
             float(self.gateway_cfg.get("high_confidence_cooldown_floor", 0.8))
         )
         self.edge_min_confidence = float(self.gateway_cfg.get("edge_min_confidence", 0.55))
+        self.upstream_key_cooldown_seconds = max(
+            0.0, float(self.gateway_cfg.get("upstream_key_cooldown_seconds", 300))
+        )
+        self.upstream_key_cooldowns: dict[tuple[str, str], float] = {}
         self.pending_tool_reasoning: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {}
 
         self.http_client = http_client or httpx.AsyncClient(timeout=60.0)
@@ -139,7 +144,7 @@ class GatewayService:
             "gateway": {
                 "token_configured": bool(self.gateway_token),
                 "upstream_ready": bool(self.upstreams) and all(
-                    bool(upstream.get("base_url") and upstream.get("api_key"))
+                    bool(upstream.get("base_url") and upstream.get("api_keys"))
                     for upstream in self.upstreams
                 ),
                 "upstream_base_url": self.upstream_base_url
@@ -154,7 +159,8 @@ class GatewayService:
                         "models": upstream["models"],
                         "prompt_cache": upstream.get("prompt_cache", ""),
                         "prompt_cache_retention": upstream.get("prompt_cache_retention", ""),
-                        "ready": bool(upstream.get("base_url") and upstream.get("api_key")),
+                        "key_count": len(upstream.get("api_keys", [])),
+                        "ready": bool(upstream.get("base_url") and upstream.get("api_keys")),
                     }
                     for upstream in self.upstreams
                 ],
@@ -440,7 +446,8 @@ class GatewayService:
 
     def _apply_prompt_cache_hints(self, payload: dict[str, Any], session_id: str) -> None:
         model = str(payload.get("model") or "").strip()
-        upstream = self._get_upstream_for_model(model)
+        route = self._resolve_upstream_for_model(model)
+        upstream = route["upstream"]
         strategy = str(upstream.get("prompt_cache") or "").strip().lower()
         if strategy != "openai":
             return
@@ -501,26 +508,149 @@ class GatewayService:
 
     async def _forward_upstream(self, payload: dict) -> httpx.Response:
         model = str(payload.get("model") or "").strip()
-        upstream = self._get_upstream_for_model(model)
+        route = self._resolve_upstream_for_model(model)
+        upstream = route["upstream"]
+        upstream_payload = self._payload_for_upstream_model(payload, route["upstream_model"])
         url = f"{upstream['base_url']}/chat/completions"
-        started_at = time.perf_counter()
-        response = await self.http_client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {upstream['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        logger.info(
-            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
-            upstream["name"],
-            model,
-            response.status_code,
-            latency_ms,
-        )
-        return response
+        key_entries = self._available_upstream_api_keys(upstream)
+        last_error: Exception | None = None
+        last_response: httpx.Response | None = None
+
+        for attempt, key_entry in enumerate(key_entries, start=1):
+            started_at = time.perf_counter()
+            try:
+                response = await self.http_client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {key_entry['value']}",
+                        "Content-Type": "application/json",
+                    },
+                    json=upstream_payload,
+                )
+            except httpx.RequestError as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                last_error = exc
+                self._cool_down_upstream_key(upstream, key_entry)
+                logger.warning(
+                    "Gateway upstream request failed | upstream=%s key=%s model=%s upstream_model=%s "
+                    "attempt=%s/%s latency_ms=%s error=%s",
+                    upstream["name"],
+                    key_entry["label"],
+                    model,
+                    route["upstream_model"],
+                    attempt,
+                    len(key_entries),
+                    latency_ms,
+                    exc,
+                )
+                continue
+
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            last_response = response
+            logger.info(
+                "Gateway upstream response | upstream=%s key=%s model=%s upstream_model=%s "
+                "status=%s attempt=%s/%s latency_ms=%s",
+                upstream["name"],
+                key_entry["label"],
+                model,
+                route["upstream_model"],
+                response.status_code,
+                attempt,
+                len(key_entries),
+                latency_ms,
+            )
+            if 200 <= response.status_code < 300:
+                self._clear_upstream_key_cooldown(upstream, key_entry)
+                return response
+            if not self._should_retry_upstream_status(response.status_code):
+                return response
+            self._cool_down_upstream_key(upstream, key_entry)
+            if attempt < len(key_entries):
+                continue
+            return response
+
+        if last_response is not None:
+            return last_response
+        return self._upstream_request_error_response(upstream, model, last_error)
+
+    async def _open_upstream_stream(
+        self,
+        route: dict[str, Any],
+        payload: dict,
+    ) -> httpx.Response:
+        upstream = route["upstream"]
+        model = route["public_model"]
+        upstream_payload = self._payload_for_upstream_model(payload, route["upstream_model"])
+        url = f"{upstream['base_url']}/chat/completions"
+        key_entries = self._available_upstream_api_keys(upstream)
+        last_error: Exception | None = None
+        last_response: httpx.Response | None = None
+
+        for attempt, key_entry in enumerate(key_entries, start=1):
+            request = self.http_client.build_request(
+                "POST",
+                url,
+                headers={
+                    "Authorization": f"Bearer {key_entry['value']}",
+                    "Content-Type": "application/json",
+                },
+                json=upstream_payload,
+            )
+            started_at = time.perf_counter()
+            try:
+                upstream_response = await self.http_client.send(request, stream=True)
+            except httpx.RequestError as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                last_error = exc
+                self._cool_down_upstream_key(upstream, key_entry)
+                logger.warning(
+                    "Gateway upstream stream failed | upstream=%s key=%s model=%s upstream_model=%s "
+                    "attempt=%s/%s latency_ms=%s error=%s",
+                    upstream["name"],
+                    key_entry["label"],
+                    model,
+                    route["upstream_model"],
+                    attempt,
+                    len(key_entries),
+                    latency_ms,
+                    exc,
+                )
+                continue
+
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
+            logger.info(
+                "Gateway upstream response | upstream=%s key=%s model=%s upstream_model=%s "
+                "status=%s attempt=%s/%s latency_ms=%s",
+                upstream["name"],
+                key_entry["label"],
+                model,
+                route["upstream_model"],
+                upstream_response.status_code,
+                attempt,
+                len(key_entries),
+                latency_ms,
+            )
+            if 200 <= upstream_response.status_code < 300:
+                self._clear_upstream_key_cooldown(upstream, key_entry)
+                return upstream_response
+
+            body = await upstream_response.aread()
+            await upstream_response.aclose()
+            last_response = httpx.Response(
+                status_code=upstream_response.status_code,
+                content=body,
+                headers=upstream_response.headers,
+            )
+            if not self._should_retry_upstream_status(upstream_response.status_code):
+                return last_response
+            self._cool_down_upstream_key(upstream, key_entry)
+            if attempt < len(key_entries):
+                continue
+            return last_response
+
+        if last_response is not None:
+            return last_response
+        return self._upstream_request_error_response(upstream, model, last_error)
 
     async def _stream_upstream(
         self,
@@ -530,27 +660,8 @@ class GatewayService:
         user_message: str,
     ) -> Response:
         model = str(payload.get("model") or "").strip()
-        upstream = self._get_upstream_for_model(model)
-        url = f"{upstream['base_url']}/chat/completions"
-        request = self.http_client.build_request(
-            "POST",
-            url,
-            headers={
-                "Authorization": f"Bearer {upstream['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        started_at = time.perf_counter()
-        upstream_response = await self.http_client.send(request, stream=True)
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        logger.info(
-            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
-            upstream["name"],
-            model,
-            upstream_response.status_code,
-            latency_ms,
-        )
+        route = self._resolve_upstream_for_model(model)
+        upstream_response = await self._open_upstream_stream(route, payload)
         content_type = upstream_response.headers.get("content-type", "text/event-stream")
 
         if not 200 <= upstream_response.status_code < 300:
@@ -1110,27 +1221,8 @@ class GatewayService:
         user_message: str,
     ) -> Response:
         model = str(payload.get("model") or "").strip()
-        upstream = self._get_upstream_for_model(model)
-        url = f"{upstream['base_url']}/chat/completions"
-        request = self.http_client.build_request(
-            "POST",
-            url,
-            headers={
-                "Authorization": f"Bearer {upstream['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        started_at = time.perf_counter()
-        upstream_response = await self.http_client.send(request, stream=True)
-        latency_ms = int((time.perf_counter() - started_at) * 1000)
-        logger.info(
-            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
-            upstream["name"],
-            model,
-            upstream_response.status_code,
-            latency_ms,
-        )
+        route = self._resolve_upstream_for_model(model)
+        upstream_response = await self._open_upstream_stream(route, payload)
 
         if not 200 <= upstream_response.status_code < 300:
             body = await upstream_response.aread()
@@ -2392,6 +2484,170 @@ class GatewayService:
     def _clamp(self, value: float, lower: float = 0.0, upper: float = 1.0) -> float:
         return max(lower, min(upper, float(value)))
 
+    def _api_key_entries_from_config(
+        self,
+        raw: dict[str, Any],
+        *,
+        fallback_api_key: str = "",
+    ) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        seen_values: set[str] = set()
+
+        def add(value: Any, label: str) -> None:
+            key = str(value or "").strip()
+            if not key or key in seen_values:
+                return
+            seen_values.add(key)
+            entries.append({"value": key, "label": label})
+
+        if fallback_api_key:
+            add(fallback_api_key, "env:OMBRE_GATEWAY_UPSTREAM_API_KEY")
+
+        api_key = str(raw.get("api_key") or "").strip()
+        if api_key:
+            add(api_key, "config:api_key")
+
+        api_key_env = str(raw.get("api_key_env") or "").strip()
+        if api_key_env:
+            add(os.environ.get(api_key_env, ""), f"env:{api_key_env}")
+
+        raw_api_keys = raw.get("api_keys", [])
+        if isinstance(raw_api_keys, str):
+            raw_api_keys = [item.strip() for item in raw_api_keys.split(",")]
+        if isinstance(raw_api_keys, list):
+            for index, item in enumerate(raw_api_keys, start=1):
+                if isinstance(item, dict):
+                    add(item.get("api_key") or item.get("key"), str(item.get("label") or f"config:api_keys[{index}]"))
+                else:
+                    add(item, f"config:api_keys[{index}]")
+
+        raw_api_key_envs = raw.get("api_key_envs", [])
+        if isinstance(raw_api_key_envs, str):
+            raw_api_key_envs = [item.strip() for item in raw_api_key_envs.split(",")]
+        if isinstance(raw_api_key_envs, list):
+            for env_name in raw_api_key_envs:
+                env_name = str(env_name or "").strip()
+                if env_name:
+                    add(os.environ.get(env_name, ""), f"env:{env_name}")
+
+        return entries
+
+    def _model_routes_from_config(
+        self,
+        raw_models: Any,
+        default_model: str,
+    ) -> tuple[list[str], dict[str, str]]:
+        models: list[str] = []
+        model_map: dict[str, str] = {}
+
+        def add(public_model: Any, upstream_model: Any = None) -> None:
+            public = str(public_model or "").strip()
+            upstream = str(upstream_model or public).strip()
+            if not public or not upstream or public in model_map:
+                return
+            models.append(public)
+            model_map[public] = upstream
+
+        if isinstance(raw_models, str):
+            for item in raw_models.split(","):
+                add(item, item)
+        elif isinstance(raw_models, list):
+            for item in raw_models:
+                if isinstance(item, dict):
+                    public = (
+                        item.get("id")
+                        or item.get("alias")
+                        or item.get("name")
+                        or item.get("model")
+                        or item.get("upstream_model")
+                    )
+                    upstream = (
+                        item.get("upstream_model")
+                        or item.get("provider_model")
+                        or item.get("target_model")
+                        or item.get("model")
+                        or public
+                    )
+                    add(public, upstream)
+                else:
+                    add(item, item)
+
+        if default_model and default_model not in model_map:
+            add(default_model, default_model)
+        return models, model_map
+
+    def _payload_for_upstream_model(self, payload: dict, upstream_model: str) -> dict:
+        upstream_payload = deepcopy(payload)
+        upstream_payload["model"] = upstream_model
+        return upstream_payload
+
+    def _available_upstream_api_keys(self, upstream: dict[str, Any]) -> list[dict[str, str]]:
+        key_entries = list(upstream.get("api_keys", []))
+        if not key_entries:
+            raise RuntimeError(f'gateway upstream "{upstream["name"]}" api_key is not configured')
+        if self.upstream_key_cooldown_seconds <= 0 or len(key_entries) == 1:
+            return key_entries
+
+        now = time.monotonic()
+        available = [
+            key_entry
+            for key_entry in key_entries
+            if self.upstream_key_cooldowns.get(self._upstream_key_id(upstream, key_entry), 0.0) <= now
+        ]
+        return available or key_entries
+
+    def _upstream_key_id(
+        self,
+        upstream: dict[str, Any],
+        key_entry: dict[str, str],
+    ) -> tuple[str, str]:
+        return (str(upstream.get("name") or "upstream"), str(key_entry.get("label") or "key"))
+
+    def _cool_down_upstream_key(
+        self,
+        upstream: dict[str, Any],
+        key_entry: dict[str, str],
+    ) -> None:
+        if self.upstream_key_cooldown_seconds <= 0:
+            return
+        self.upstream_key_cooldowns[self._upstream_key_id(upstream, key_entry)] = (
+            time.monotonic() + self.upstream_key_cooldown_seconds
+        )
+
+    def _clear_upstream_key_cooldown(
+        self,
+        upstream: dict[str, Any],
+        key_entry: dict[str, str],
+    ) -> None:
+        self.upstream_key_cooldowns.pop(self._upstream_key_id(upstream, key_entry), None)
+
+    def _should_retry_upstream_status(self, status_code: int) -> bool:
+        return int(status_code) in RETRYABLE_UPSTREAM_STATUS_CODES
+
+    def _upstream_request_error_response(
+        self,
+        upstream: dict[str, Any],
+        model: str,
+        error: Exception | None,
+    ) -> httpx.Response:
+        detail = str(error) if error else "all upstream keys failed"
+        logger.error(
+            "Gateway upstream unavailable | upstream=%s model=%s error=%s",
+            upstream.get("name"),
+            model,
+            detail,
+        )
+        return httpx.Response(
+            502,
+            json={
+                "error": {
+                    "message": f'Upstream "{upstream.get("name")}" request failed',
+                    "type": "upstream_error",
+                    "detail": detail,
+                }
+            },
+        )
+
     def _load_upstreams(self) -> list[dict[str, Any]]:
         raw_upstreams = self.gateway_cfg.get("upstreams", [])
         if isinstance(raw_upstreams, list) and raw_upstreams:
@@ -2402,19 +2658,22 @@ class GatewayService:
                 name = str(raw.get("name") or f"upstream-{index}").strip() or f"upstream-{index}"
                 base_url = str(raw.get("base_url") or "").rstrip("/")
                 default_model = str(raw.get("default_model") or "").strip()
-                api_key = str(raw.get("api_key") or "").strip()
-                api_key_env = str(raw.get("api_key_env") or "").strip()
+                api_keys = self._api_key_entries_from_config(raw)
+                models, model_map = self._model_routes_from_config(
+                    raw.get("models", []),
+                    default_model,
+                )
                 prompt_cache = str(raw.get("prompt_cache") or "").strip().lower()
                 prompt_cache_retention = str(raw.get("prompt_cache_retention") or "").strip()
-                if api_key_env and not api_key:
-                    api_key = os.environ.get(api_key_env, "")
                 upstreams.append(
                     {
                         "name": name,
                         "base_url": base_url,
-                        "api_key": api_key,
+                        "api_key": api_keys[0]["value"] if api_keys else "",
+                        "api_keys": api_keys,
                         "default_model": default_model,
-                        "models": self._normalize_model_list(raw.get("models", []), default_model),
+                        "models": models,
+                        "model_map": model_map,
                         "prompt_cache": prompt_cache,
                         "prompt_cache_retention": prompt_cache_retention,
                     }
@@ -2422,16 +2681,22 @@ class GatewayService:
             if upstreams:
                 return upstreams
 
+        models, model_map = self._model_routes_from_config(
+            self.gateway_cfg.get("upstream_models", []),
+            self.upstream_default_model,
+        )
         return [
             {
                 "name": "default",
                 "base_url": self.upstream_base_url,
                 "api_key": self.upstream_api_key,
-                "default_model": self.upstream_default_model,
-                "models": self._normalize_model_list(
-                    self.gateway_cfg.get("upstream_models", []),
-                    self.upstream_default_model,
+                "api_keys": self._api_key_entries_from_config(
+                    self.gateway_cfg,
+                    fallback_api_key=self.upstream_api_key,
                 ),
+                "default_model": self.upstream_default_model,
+                "models": models,
+                "model_map": model_map,
                 "prompt_cache": str(self.gateway_cfg.get("prompt_cache") or "").strip().lower(),
                 "prompt_cache_retention": str(
                     self.gateway_cfg.get("prompt_cache_retention") or ""
@@ -2455,32 +2720,44 @@ class GatewayService:
                 models.append(model)
         return models
 
-    def _get_upstream_for_model(self, model: str) -> dict[str, Any]:
+    def _resolve_upstream_for_model(self, model: str) -> dict[str, Any]:
         if not self.upstreams:
             raise RuntimeError("gateway upstream is not configured")
 
+        normalized_model = str(model or "").strip()
         if len(self.upstreams) == 1:
             upstream = self.upstreams[0]
+            if not normalized_model:
+                normalized_model = str(upstream.get("default_model") or self.upstream_default_model).strip()
+            model_map = upstream.get("model_map", {})
+            upstream_model = model_map.get(normalized_model, normalized_model)
         else:
-            normalized_model = str(model or "").strip()
             if not normalized_model:
                 raise ValueError("model is required when gateway has multiple upstreams")
             upstream = next(
                 (
                     candidate
                     for candidate in self.upstreams
-                    if normalized_model in candidate.get("models", [])
+                    if normalized_model in candidate.get("model_map", {})
                 ),
                 None,
             )
             if upstream is None:
                 raise ValueError(f'model "{normalized_model}" is not configured in gateway.upstreams')
+            upstream_model = upstream.get("model_map", {}).get(normalized_model, normalized_model)
 
         if not upstream.get("base_url"):
             raise RuntimeError(f'gateway upstream "{upstream["name"]}" base_url is not configured')
-        if not upstream.get("api_key"):
+        if not upstream.get("api_keys"):
             raise RuntimeError(f'gateway upstream "{upstream["name"]}" api_key is not configured')
-        return upstream
+        return {
+            "upstream": upstream,
+            "public_model": normalized_model,
+            "upstream_model": upstream_model,
+        }
+
+    def _get_upstream_for_model(self, model: str) -> dict[str, Any]:
+        return self._resolve_upstream_for_model(model)["upstream"]
 
     def _normalize_model_list(self, raw_models: Any, default_model: str) -> list[str]:
         if isinstance(raw_models, str):
