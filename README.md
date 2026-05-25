@@ -906,6 +906,9 @@ source=deleted
 ## 维护命令
 
 ```bash
+# 一键更新：拉代码、重建/更新容器、健康检查
+COMPOSE_FILE=compose.hk.yml bash scripts/update_deploy.sh
+
 # 服务状态
 docker compose -f compose.hk.yml ps
 docker compose -f compose.hk.yml logs --tail=120 ombre-brain
@@ -917,6 +920,15 @@ curl -sS http://127.0.0.1:18002/health
 
 # embedding 回填
 docker compose -f compose.hk.yml exec -T ombre-brain python backfill_embeddings.py --batch-size 20
+
+# 一键补缺失 embedding
+COMPOSE_FILE=compose.hk.yml bash scripts/embedding_backfill.sh
+
+# 一键重建所有 embedding（会消耗较多 embedding API 次数）
+COMPOSE_FILE=compose.hk.yml bash scripts/embedding_rebuild.sh
+
+# 一键检查孤儿 embedding，确认后清理
+COMPOSE_FILE=compose.hk.yml bash scripts/embedding_cleanup_orphans.sh
 
 # enrich 补跑
 # 正常情况下 reflection scheduler 会自动少量补跑；需要手动修复时可从 MCP 客户端调用 enrich_backfill(limit=20)。
