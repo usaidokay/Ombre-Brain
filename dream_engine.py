@@ -28,6 +28,7 @@ DREAM_PROMPT = """你在睡梦中。
 - dreamer：正在做梦的 AI 名字。
 - identity_anchor：只用来确定“谁在梦”，不要复述，不要当成剧情。
 - daytime_residue：最近两天内的记忆碎片和 whisper；其中 comments 是某条记忆下后来的年轮/回看感受。
+- old_echo：额外混入的一条旧记忆，像梦里突然浮起的旧回声，不要当主线。
 
 请用 dreamer 的第一人称、现在时写一段梦境。
 
@@ -39,6 +40,7 @@ DREAM_PROMPT = """你在睡梦中。
 - 至少写一处具体感官细节。
 - 不要提 bucket、source、metadata、prompt。
 - identity_anchor 只影响人格底色，不能变成梦的主要内容。
+- old_echo 只能轻轻误入，不能压过 daytime_residue。
 - 写 80 到 220 字。
 - 只返回梦境正文，不要标题，不要 JSON，不要列表。
 """
@@ -124,6 +126,8 @@ class DreamEngine:
         self.material_window_hours = max(1, int(cfg.get("material_window_hours", 48)))
         self.min_material_count = max(1, int(cfg.get("min_material_count", 5)))
         self.material_limit = max(self.min_material_count, int(cfg.get("material_limit", 5)))
+        self.old_echo_enabled = bool(cfg.get("old_echo_enabled", True))
+        self.old_echo_min_age_hours = max(1.0, float(cfg.get("old_echo_min_age_hours", 72)))
         self.identity_anchor_id = str(cfg.get("identity_anchor_id") or "").strip()
         self.min_surface_age_hours = max(0.0, float(cfg.get("min_surface_age_hours", 3)))
         self.surface_threshold = float(cfg.get("surface_threshold", 0.62))
@@ -279,6 +283,74 @@ class DreamEngine:
         score = 0.45 * recency + 0.30 * arousal + 0.20 * importance + whisper_bonus
         return (score, created.isoformat())
 
+    def _is_old_echo_bucket(self, bucket: dict, now_local: datetime, exclude_ids: set[str]) -> bool:
+        meta = bucket.get("metadata", {}) or {}
+        bucket_id = str(bucket.get("id") or meta.get("id") or "")
+        if not bucket_id or bucket_id in exclude_ids:
+            return False
+        created = self._bucket_created_local(bucket)
+        if not created:
+            return False
+        age_hours = (now_local - created).total_seconds() / 3600
+        if age_hours < self.old_echo_min_age_hours:
+            return False
+        bucket_type = meta.get("type")
+        if bucket_type in {"feel", "permanent", "archived", "archive"}:
+            return False
+        if meta.get("pinned") or meta.get("protected") or meta.get("anchor"):
+            return False
+        return bool(bucket.get("content"))
+
+    def _old_echo_score(self, bucket: dict, materials: list[dict], now_local: datetime) -> tuple[float, str]:
+        meta = bucket.get("metadata", {}) or {}
+        material_tags = {
+            str(tag).lower()
+            for item in materials
+            for tag in (item.get("metadata", {}) or {}).get("tags", []) or []
+        }
+        material_domains = {
+            str(domain).lower()
+            for item in materials
+            for domain in (item.get("metadata", {}) or {}).get("domain", []) or []
+        }
+        tags = {str(tag).lower() for tag in meta.get("tags", []) or []}
+        domains = {str(domain).lower() for domain in meta.get("domain", []) or []}
+        shared_tags = len(tags & material_tags)
+        shared_domains = len(domains & material_domains)
+        importance = max(1, min(10, int(meta.get("importance", 5)))) / 10
+        arousal = _clamp(meta.get("arousal", 0.3), 0.3)
+        created = self._bucket_created_local(bucket) or now_local
+        age_days = max(0.0, (now_local - created).total_seconds() / 86400)
+        age_curve = 1.0 / (1.0 + abs(age_days - 14.0) / 30.0)
+        score = (
+            0.30 * min(1.0, shared_tags / 2.0)
+            + 0.20 * min(1.0, shared_domains / 2.0)
+            + 0.25 * importance
+            + 0.15 * arousal
+            + 0.10 * age_curve
+        )
+        return (score, created.isoformat())
+
+    def _select_old_echo(self, all_buckets: list[dict], materials: list[dict], now_local: datetime) -> dict | None:
+        if not self.old_echo_enabled:
+            return None
+        exclude_ids = {
+            str(bucket.get("id") or bucket.get("metadata", {}).get("id") or "")
+            for bucket in materials
+        }
+        candidates = [
+            bucket
+            for bucket in all_buckets
+            if self._is_old_echo_bucket(bucket, now_local, exclude_ids)
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda bucket: self._old_echo_score(bucket, materials, now_local),
+            reverse=True,
+        )
+        return candidates[0]
+
     async def select_materials(self, bucket_mgr, now: datetime | None = None) -> tuple[list[dict], dict | None]:
         now_local = self._now(now)
         start = now_local - timedelta(hours=self.material_window_hours)
@@ -297,7 +369,12 @@ class DreamEngine:
         identity_anchor = await bucket_mgr.get(self.identity_anchor_id) if self.identity_anchor_id else None
         return materials[: self.material_limit], identity_anchor
 
-    def _payload_for(self, materials: list[dict], identity_anchor: dict | None) -> dict:
+    def _payload_for(
+        self,
+        materials: list[dict],
+        identity_anchor: dict | None,
+        old_echo: dict | None = None,
+    ) -> dict:
         def comment_payloads(bucket: dict) -> list[dict]:
             meta = bucket.get("metadata", {}) or {}
             comments = meta.get("comments", [])
@@ -351,6 +428,7 @@ class DreamEngine:
             "user_display_name": self.identity.get("user_display_name", "小雨"),
             "identity_anchor": anchor_payload,
             "daytime_residue": [material_payload(bucket) for bucket in materials],
+            "old_echo": material_payload(old_echo) if old_echo else None,
         }
 
     async def _call_dream_model(self, payload: dict) -> str:
@@ -488,15 +566,26 @@ class DreamEngine:
                     "probability": self.daily_probability,
                 }
 
-        payload = self._payload_for(materials, identity_anchor)
+        try:
+            all_buckets = await bucket_mgr.list_all(include_archive=False)
+        except Exception:
+            all_buckets = []
+        old_echo = self._select_old_echo(all_buckets, materials, now_local)
+        payload = self._payload_for(materials, identity_anchor, old_echo)
         dream_text = await self._call_dream_model(payload)
         core_affect = self._core_affect_from_materials(materials)
-        recall_cues = self._recall_cues_from_materials(materials)
+        cue_materials = materials + ([old_echo] if old_echo else [])
+        recall_cues = self._recall_cues_from_materials(cue_materials)
         dream_id = f"dream_{now_local.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         source_ids = [
             str(bucket.get("id") or bucket.get("metadata", {}).get("id") or "")
             for bucket in materials
         ]
+        old_echo_id = (
+            str(old_echo.get("id") or old_echo.get("metadata", {}).get("id") or "")
+            if old_echo
+            else ""
+        )
         generated_at = now_local.astimezone(timezone.utc).isoformat(timespec="seconds")
         metadata = {
             "dream_id": dream_id,
@@ -507,6 +596,7 @@ class DreamEngine:
             "core_affect": core_affect,
             "recall_cues": recall_cues,
             "source_bucket_ids": source_ids,
+            "old_echo_id": old_echo_id or None,
             "identity_anchor_id": self.identity_anchor_id,
             "material_count": len(materials),
             "surfaced": False,

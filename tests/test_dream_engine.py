@@ -141,6 +141,50 @@ async def test_dream_materials_use_newer_created_or_updated_at_but_not_last_acti
 
 
 @pytest.mark.asyncio
+async def test_dream_old_echo_adds_one_old_memory_without_counting_as_recent_material(test_config):
+    cfg = _dream_config(test_config, old_echo_enabled=True, old_echo_min_age_hours=72)
+    mgr = BucketManager(cfg)
+    engine = DreamEngine(cfg)
+    now = datetime(2026, 5, 25, 3, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    for index in range(5):
+        await mgr.create(
+            bucket_id=f"recent-memory-{index}",
+            content=f"最近普通记忆 {index}，围绕写梦和年轮。",
+            tags=["dream"],
+            domain=["记忆"],
+            created=(now - timedelta(hours=index + 1)).isoformat(timespec="seconds"),
+        )
+    old_id = await mgr.create(
+        bucket_id="old-echo",
+        content="很久以前也讨论过梦会把旧事误认成新画面。",
+        tags=["dream"],
+        domain=["记忆"],
+        importance=8,
+        created=(now - timedelta(days=10)).isoformat(timespec="seconds"),
+    )
+    await mgr.create(
+        bucket_id="old-anchor",
+        content="旧锚点不能作为 old_echo。",
+        tags=["dream"],
+        domain=["记忆"],
+        anchor=True,
+        created=(now - timedelta(days=20)).isoformat(timespec="seconds"),
+    )
+
+    materials, anchor = await engine.select_materials(mgr, now)
+    all_buckets = await mgr.list_all(include_archive=False)
+    old_echo = engine._select_old_echo(all_buckets, materials, now)
+    payload = engine._payload_for(materials, anchor, old_echo)
+
+    assert len(materials) == 5
+    assert {bucket["id"] for bucket in materials} == {f"recent-memory-{index}" for index in range(5)}
+    assert old_echo and old_echo["id"] == old_id
+    assert payload["old_echo"]["source_id"] == old_id
+    assert old_id not in {item["source_id"] for item in payload["daytime_residue"]}
+
+
+@pytest.mark.asyncio
 async def test_dream_payload_exposes_recent_residue_time_when_bucket_was_updated(test_config):
     cfg = _dream_config(test_config)
     engine = DreamEngine(cfg)

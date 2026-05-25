@@ -10,6 +10,8 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     assert config["write_path"]["semantic_search_timeout_seconds"] == 3
     assert config["reflection"]["enrich_backfill_enabled"] is True
     assert config["reflection"]["enrich_backfill_limit"] == 5
+    assert config["dream"]["old_echo_enabled"] is True
+    assert config["dream"]["old_echo_min_age_hours"] == 72
 
 
 def test_load_config_reads_runtime_config_before_env_override(tmp_path, monkeypatch):

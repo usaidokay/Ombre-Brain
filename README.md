@@ -510,6 +510,8 @@ dream:
   min_material_count: 5
   material_window_hours: 48
   material_limit: 5
+  old_echo_enabled: true
+  old_echo_min_age_hours: 72
   min_surface_age_hours: 3
   spontaneous_surface_prob: 0.02
 ```
@@ -519,6 +521,7 @@ dream:
 ```text
 普通 dynamic 记忆 + whisper
 最近 material_window_hours 内，created / updated_at 取较新的时间
+如果 old_echo_enabled=true，会额外混入 1 条至少 old_echo_min_age_hours 以前的普通旧记忆，不占 material_limit
 不读 relationship_weather / daily_impression
 不读 permanent / pinned / protected / anchor / archive
 不吃 last_active，避免只是被召回过的旧记忆挤进梦里

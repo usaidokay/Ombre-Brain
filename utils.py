@@ -201,6 +201,8 @@ def load_config(config_path: str = None) -> dict:
             "min_material_count": 5,
             "material_window_hours": 48,
             "material_limit": 5,
+            "old_echo_enabled": True,
+            "old_echo_min_age_hours": 72,
             "identity_anchor_id": "c0b8ddb7423e",
             "min_surface_age_hours": 3,
             "surface_threshold": 0.62,
