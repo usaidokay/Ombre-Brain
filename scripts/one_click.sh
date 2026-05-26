@@ -62,7 +62,7 @@ prompt_secret() {
   local value
   while true; do
     read -r -s -p "${label}: " value
-    printf '\n'
+    printf '\n' >&2
     if [[ -n "${value}" || "${required}" != "true" ]]; then
       printf '%s\n' "${value}"
       return 0
@@ -154,9 +154,10 @@ add_gateway_provider_interactive() {
     if ! [[ "${key_count}" =~ ^[0-9]+$ ]] || (( key_count < 1 )); then
       key_count=2
     fi
-    for ((i = 1; i <= key_count; i++)); do
-      local env_name="${prefix}_API_KEY_${i}"
-      key_value="$(prompt_secret "${name} 第 ${i} 个 key（${env_name}）" true)"
+    local key_index
+    for ((key_index = 1; key_index <= key_count; key_index++)); do
+      local env_name="${prefix}_API_KEY_${key_index}"
+      key_value="$(prompt_secret "${name} 第 ${key_index} 个 key（${env_name}）" true)"
       append_gateway_env "${env_name}" "${key_value}"
       key_envs+="${env_name},"
     done
@@ -266,8 +267,9 @@ configure_gateway_upstreams() {
       if ! [[ "${count}" =~ ^[0-9]+$ ]] || (( count < 1 )); then
         count=2
       fi
-      for ((i = 1; i <= count; i++)); do
-        add_gateway_provider_interactive "${i}" "provider-${i}" "${dehy_base_url}" "${dehy_model}" "${dehy_key}"
+      local provider_index
+      for ((provider_index = 1; provider_index <= count; provider_index++)); do
+        add_gateway_provider_interactive "${provider_index}" "provider-${provider_index}" "${dehy_base_url}" "${dehy_model}" "${dehy_key}"
       done
       ;;
     *)
