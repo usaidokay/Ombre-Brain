@@ -4,6 +4,7 @@ import logging
 import threading
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import frontmatter
 import httpx
@@ -36,6 +37,39 @@ class DummyEmbeddingEngine:
         if self.query_sink is not None:
             self.query_sink.append(query)
         return self.results[:top_k]
+
+
+class DummyRerankerEngine:
+    def __init__(
+        self,
+        scores: list[float] | None = None,
+        score_by_text: dict[str, float] | None = None,
+        enabled: bool = False,
+    ):
+        self.scores = scores or []
+        self.score_by_text = score_by_text or {}
+        self.enabled = enabled
+        self.candidate_limit = 20
+        self.score_weight = 0.65
+        self.calls = []
+
+    async def rerank(self, query: str, documents: list[str], top_n: int | None = None):
+        self.calls.append({"query": query, "documents": documents, "top_n": top_n})
+        results = []
+        for index, document in enumerate(documents):
+            if self.score_by_text:
+                score = 0.0
+                for needle, value in self.score_by_text.items():
+                    if needle in document:
+                        score = float(value)
+                        break
+            elif index < len(self.scores):
+                score = float(self.scores[index])
+            else:
+                score = 0.0
+            results.append(SimpleNamespace(index=index, score=score))
+        results.sort(key=lambda item: item.score, reverse=True)
+        return results[:top_n] if top_n else results
 
 
 class DummyPersonaEngine:
@@ -185,6 +219,7 @@ def _build_service(
     *,
     embedding_results: list[tuple[str, float]] | None = None,
     embedding_queries: list[str] | None = None,
+    reranker_engine=None,
 ):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_UPSTREAM_API_KEY", "upstream-secret")
@@ -220,6 +255,7 @@ def _build_service(
         bucket_mgr=bucket_mgr,
         dehydrator=DummyDehydrator(),
         embedding_engine=DummyEmbeddingEngine(embedding_results, enabled=True, query_sink=embedding_queries),
+        reranker_engine=reranker_engine or DummyRerankerEngine(enabled=False),
         state_store=state_store,
         persona_engine=DummyPersonaEngine(),
         http_client=http_client,
@@ -2197,6 +2233,62 @@ def test_gateway_diffused_memory_uses_summary_only_for_moments(
     assert "Diffused Memory" in injected
     assert "扩散摘要目标" in injected
     assert "扩散目标原文-绝对不能出现 ABC123" not in injected
+
+
+def test_gateway_reranker_reorders_dynamic_memory_candidates(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="猫咪药量记录：小橘今天晚上的药量要减半观察。",
+        name="猫咪药量记录",
+        hours_ago=24,
+    )
+    noisy_id = _create_bucket(
+        bucket_mgr,
+        content="厨房采购计划：记得买咖啡滤纸和垃圾袋。",
+        name="厨房采购计划",
+        hours_ago=1,
+    )
+    reranker = DummyRerankerEngine(
+        enabled=True,
+        score_by_text={
+            "猫咪药量记录": 0.98,
+            "厨房采购计划": 0.05,
+        },
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=500,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+            inject_max_cards=1,
+        ),
+        bucket_mgr,
+        embedding_results=[(noisy_id, 0.99), (target_id, 0.55)],
+        reranker_engine=reranker,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-rerank-memory",
+            },
+            json={"messages": [{"role": "user", "content": "猫咪药量今晚怎么处理"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert reranker.calls
+    assert "猫咪药量记录" in injected
+    assert "厨房采购计划" not in injected
 
 
 @pytest.mark.parametrize(

@@ -44,6 +44,7 @@ from memory_relevance import (
 )
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
+from reranker_engine import RerankerEngine
 from utils import count_tokens_approx, load_config, setup_logging, strip_wikilinks
 
 logger = logging.getLogger("ombre_brain.gateway")
@@ -109,6 +110,7 @@ class GatewayService:
         bucket_mgr: BucketManager | None = None,
         dehydrator: Dehydrator | None = None,
         embedding_engine: EmbeddingEngine | None = None,
+        reranker_engine: RerankerEngine | None = None,
         state_store: GatewayStateStore | None = None,
         persona_engine: PersonaStateEngine | None = None,
         memory_node_store: MemoryNodeStore | None = None,
@@ -120,6 +122,7 @@ class GatewayService:
         self.bucket_mgr = bucket_mgr or BucketManager(config)
         self.dehydrator = dehydrator or Dehydrator(config)
         self.embedding_engine = embedding_engine or EmbeddingEngine(config)
+        self.reranker_engine = reranker_engine or RerankerEngine(config)
         self.memory_edge_store = MemoryEdgeStore(config)
         self.memory_node_store = memory_node_store or MemoryNodeStore(config)
         self.memory_moment_store = MemoryMomentStore(config)
@@ -223,6 +226,12 @@ class GatewayService:
                 "upstream_models": self.upstream_models,
                 "cooldown_hours": self.cooldown_hours,
                 "skip_recent_rounds": self.skip_recent_rounds,
+                "reranker": {
+                    "enabled": bool(getattr(self.reranker_engine, "enabled", False)),
+                    "model": getattr(self.reranker_engine, "model", ""),
+                    "base_url": getattr(self.reranker_engine, "base_url", ""),
+                    "candidate_limit": getattr(self.reranker_engine, "candidate_limit", 0),
+                },
                 "upstreams": [
                     {
                         "name": upstream["name"],
@@ -2312,6 +2321,7 @@ class GatewayService:
             and moment.get("section") not in MOMENT_TEMPERATURE_SECTIONS
         ]
         candidates = self._apply_relevance_to_moment_candidates(query, candidates)
+        candidates = await self._rerank_moment_candidates(query, candidates)
 
         selected: list[dict] = []
         seen_buckets: set[str] = set()
@@ -2348,6 +2358,59 @@ class GatewayService:
             if len(selected) >= self.inject_max_cards:
                 break
         return selected, candidates
+
+    async def _rerank_moment_candidates(self, query: str, candidates: list[dict]) -> list[dict]:
+        if not candidates or not getattr(self.reranker_engine, "enabled", False):
+            return candidates
+        candidate_limit = min(
+            len(candidates),
+            max(1, int(getattr(self.reranker_engine, "candidate_limit", 20) or 20)),
+        )
+        head = candidates[:candidate_limit]
+        tail = candidates[candidate_limit:]
+        documents = [self._moment_rerank_document(moment) for moment in head]
+        results = await self.reranker_engine.rerank(query, documents, top_n=len(head))
+        if not results:
+            return candidates
+
+        by_index = {result.index: result.score for result in results}
+        weight = max(0.0, min(1.0, float(getattr(self.reranker_engine, "score_weight", 0.65))))
+        reranked = []
+        for index, moment in enumerate(head):
+            item = dict(moment)
+            rerank_score = by_index.get(index)
+            try:
+                base_score = float(item.get("score", 0.0))
+            except (TypeError, ValueError):
+                base_score = 0.0
+            if rerank_score is None:
+                item["rerank_score"] = None
+                item["combined_score"] = base_score
+            else:
+                item["rerank_score"] = round(rerank_score, 4)
+                item["combined_score"] = round(base_score * (1.0 - weight) + rerank_score * weight, 4)
+                item["score"] = item["combined_score"]
+            reranked.append(item)
+        reranked.sort(
+            key=lambda item: (
+                item.get("rerank_score") is not None,
+                item.get("combined_score", item.get("score", 0.0)),
+                item.get("score", 0.0),
+            ),
+            reverse=True,
+        )
+        return reranked + tail
+
+    def _moment_rerank_document(self, moment: dict) -> str:
+        meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+        fields = [
+            f"title: {meta.get('bucket_name') or moment.get('bucket_id') or ''}",
+            f"section: {moment.get('section') or ''}",
+            f"domain: {' '.join(str(item) for item in meta.get('bucket_domain', []) or [])}",
+            f"tags: {' '.join(str(item) for item in meta.get('bucket_tags', []) or [])}",
+            f"text: {moment.get('text') or ''}",
+        ]
+        return "\n".join(fields)[:4000]
 
     def _format_recalled_moments(
         self,
@@ -2991,10 +3054,59 @@ class GatewayService:
             )
 
         scored_candidates.sort(key=lambda item: item["score"], reverse=True)
+        scored_candidates = await self._rerank_scored_bucket_candidates(query, scored_candidates)
         filtered = [item for item in scored_candidates if item["bucket"]["id"] not in recent_ids]
         active_pool = filtered or scored_candidates
         selected = self._pick_dynamic_cards(active_pool)
         return [item["bucket"] for item in selected]
+
+    async def _rerank_scored_bucket_candidates(self, query: str, scored_candidates: list[dict]) -> list[dict]:
+        if not scored_candidates or not getattr(self.reranker_engine, "enabled", False):
+            return scored_candidates
+        candidate_limit = min(
+            len(scored_candidates),
+            max(1, int(getattr(self.reranker_engine, "candidate_limit", 20) or 20)),
+        )
+        head = scored_candidates[:candidate_limit]
+        tail = scored_candidates[candidate_limit:]
+        documents = [self._bucket_rerank_document(item["bucket"]) for item in head]
+        results = await self.reranker_engine.rerank(query, documents, top_n=len(head))
+        if not results:
+            return scored_candidates
+
+        by_index = {result.index: result.score for result in results}
+        weight = max(0.0, min(1.0, float(getattr(self.reranker_engine, "score_weight", 0.65))))
+        reranked = []
+        for index, item in enumerate(head):
+            new_item = dict(item)
+            rerank_score = by_index.get(index)
+            if rerank_score is None:
+                new_item["rerank_score"] = None
+                new_item["combined_score"] = item["score"]
+            else:
+                new_item["rerank_score"] = round(rerank_score, 4)
+                new_item["combined_score"] = round(item["score"] * (1.0 - weight) + rerank_score * weight, 4)
+                new_item["score"] = new_item["combined_score"]
+            reranked.append(new_item)
+        reranked.sort(
+            key=lambda item: (
+                item.get("rerank_score") is not None,
+                item.get("combined_score", item.get("score", 0.0)),
+                item.get("score", 0.0),
+            ),
+            reverse=True,
+        )
+        return reranked + tail
+
+    def _bucket_rerank_document(self, bucket: dict) -> str:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        fields = [
+            f"title: {meta.get('name') or bucket.get('id') or ''}",
+            f"domain: {' '.join(str(item) for item in meta.get('domain', []) or [])}",
+            f"tags: {' '.join(str(item) for item in meta.get('tags', []) or [])}",
+            f"content: {strip_wikilinks(str(bucket.get('content') or ''))}",
+        ]
+        return "\n".join(fields)[:4000]
 
     def _is_high_confidence_match(self, semantic_score: float, keyword_score: float) -> bool:
         return (

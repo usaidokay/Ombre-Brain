@@ -57,9 +57,21 @@ def load_config(config_path: str = None) -> dict:
         },
         "embedding": {
             "enabled": True,
-            "model": "gemini-embedding-001",
+            "model": "Qwen/Qwen3-Embedding-4B",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "",
+            "max_chars": 6000,
+            "query_instruction": "Given a memory search query, retrieve relevant long-term memory passages.",
+            "document_instruction": "",
+        },
+        "reranker": {
+            "enabled": True,
+            "model": "Qwen/Qwen3-Reranker-4B",
             "base_url": "",
             "api_key": "",
+            "candidate_limit": 20,
+            "score_weight": 0.65,
+            "timeout_seconds": 12,
         },
         "decay": {
             "lambda": 0.05,
@@ -327,6 +339,40 @@ def load_config(config_path: str = None) -> dict:
     env_embedding_enabled = os.environ.get("OMBRE_EMBEDDING_ENABLED", "")
     if env_embedding_enabled:
         config.setdefault("embedding", {})["enabled"] = env_embedding_enabled.lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    env_embedding_max_chars = os.environ.get("OMBRE_EMBEDDING_MAX_CHARS", "")
+    if env_embedding_max_chars:
+        try:
+            config.setdefault("embedding", {})["max_chars"] = int(env_embedding_max_chars)
+        except ValueError:
+            logging.warning(
+                f"Invalid OMBRE_EMBEDDING_MAX_CHARS / 无效的 OMBRE_EMBEDDING_MAX_CHARS: {env_embedding_max_chars}"
+            )
+
+    env_embedding_query_instruction = os.environ.get("OMBRE_EMBEDDING_QUERY_INSTRUCTION", "")
+    if env_embedding_query_instruction:
+        config.setdefault("embedding", {})["query_instruction"] = env_embedding_query_instruction
+
+    env_reranker_api_key = os.environ.get("OMBRE_RERANKER_API_KEY", "")
+    if env_reranker_api_key:
+        config.setdefault("reranker", {})["api_key"] = env_reranker_api_key
+
+    env_reranker_base_url = os.environ.get("OMBRE_RERANKER_BASE_URL", "")
+    if env_reranker_base_url:
+        config.setdefault("reranker", {})["base_url"] = env_reranker_base_url
+
+    env_reranker_model = os.environ.get("OMBRE_RERANKER_MODEL", "")
+    if env_reranker_model:
+        config.setdefault("reranker", {})["model"] = env_reranker_model
+
+    env_reranker_enabled = os.environ.get("OMBRE_RERANKER_ENABLED", "")
+    if env_reranker_enabled:
+        config.setdefault("reranker", {})["enabled"] = env_reranker_enabled.lower() in (
             "1",
             "true",
             "yes",

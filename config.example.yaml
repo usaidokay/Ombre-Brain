@@ -110,17 +110,40 @@ decay:
 # 优先使用 embedding 独立 API；未配置时回退复用脱水 API
 embedding:
   enabled: true                   # Enable embedding / 启用向量化
-  model: "Qwen/Qwen3-Embedding-0.6B"  # Embedding model / 向量化模型
+  model: "Qwen/Qwen3-Embedding-4B"  # Embedding model / 向量化模型
   base_url: "https://api.siliconflow.cn/v1"
+  max_chars: 6000                 # Max chars sent per embedding request / 单次向量化最多字符数
+  query_instruction: "Given a memory search query, retrieve relevant long-term memory passages."
+  document_instruction: ""
   # api_key: ""                   # Use env var OMBRE_EMBEDDING_API_KEY / 请使用环境变量
   # Common embedding model examples / 常见向量模型示例：
-  #   SiliconFlow Qwen: Qwen/Qwen3-Embedding-0.6B
+  #   SiliconFlow Qwen: Qwen/Qwen3-Embedding-4B
+  #   SiliconFlow Qwen: Qwen/Qwen3-Embedding-8B
   #   Gemini:           gemini-embedding-001
   # Env vars / 环境变量:
   #   OMBRE_EMBEDDING_API_KEY
   #   OMBRE_EMBEDDING_BASE_URL
   #   OMBRE_EMBEDDING_MODEL
   #   OMBRE_EMBEDDING_ENABLED
+  #   OMBRE_EMBEDDING_MAX_CHARS
+  #   OMBRE_EMBEDDING_QUERY_INSTRUCTION
+
+# --- Reranker / 重排序配置 ---
+# Uses the embedding base_url/api_key when these are left empty.
+# 留空时复用 embedding 的 base_url/api_key。
+reranker:
+  enabled: true
+  model: "Qwen/Qwen3-Reranker-4B"
+  base_url: ""
+  # api_key: ""                   # Use OMBRE_RERANKER_API_KEY or reuse embedding key
+  candidate_limit: 20
+  score_weight: 0.65
+  timeout_seconds: 12
+  # Env vars / 环境变量:
+  #   OMBRE_RERANKER_API_KEY
+  #   OMBRE_RERANKER_BASE_URL
+  #   OMBRE_RERANKER_MODEL
+  #   OMBRE_RERANKER_ENABLED
 
 # --- Gateway / 网关注入配置 ---
 # Exposes an OpenAI-compatible /v1/chat/completions endpoint that injects
