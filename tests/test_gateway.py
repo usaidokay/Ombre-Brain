@@ -3208,6 +3208,17 @@ def test_gateway_low_confidence_candidate_does_not_leak_through_recent_context(
     assert payload["diffused_bucket_ids"] == []
     assert payload["recalled_bucket_ids"] == []
     assert "一封情书" not in payload["dynamic_context"]
+    suppressed_bucket = next(
+        item
+        for item in payload["suppressed_bucket_candidates"]
+        if item["bucket_id"] == romance_id
+    )
+    assert suppressed_bucket["bucket_name"] == "一封情书"
+    assert suppressed_bucket["admission_reason"] == "query_topic_evidence_missing"
+    assert suppressed_bucket["semantic_score"] == 0.56
+    assert suppressed_bucket["recall_policy_debug"]["has_topic_evidence"] is False
+    assert suppressed_bucket["recall_policy_debug"]["auto"] is True
+    assert "情书里写过" in suppressed_bucket["content_preview"]
 
 
 def test_gateway_comment_only_topic_evidence_does_not_promote_bucket_body(
