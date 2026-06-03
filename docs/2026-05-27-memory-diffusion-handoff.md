@@ -792,20 +792,51 @@ python scripts/build_moment_graph.py --incremental
 
 ### 3. source_ref / transcript 行号
 
-参考外部方案里“节点对应 transcript 行号范围”。后续可以给 moment 增：
+第一版已完成，先做的是 bucket markdown 行号，不是外部 transcript 行号。
+
+新增提交：
+
+```text
+f375d06 Add source refs for memory moments
+4e896b3 Clamp source ref windows to bucket content
+```
+
+已实现：
+
+- `BucketManager` 读取 bucket 时记录 `path` 和正文起始行 `content_start_line`。
+- `parse_bucket_moments()` 给 body / structured section moment 写入：
 
 ```yaml
 source_ref:
-  path: "transcripts/xxx.md"
-  start_line: 120
-  end_line: 138
+  path: "/data/dynamic/xxx.md"
+  content_start_line: 39
+  start_line: 39
+  end_line: 47
+  source: "bucket_content"
 ```
 
-召回时：
+- `source_ref_window()` 只读取 `allowed_root` 内文件，并用 `content_start_line` 防止窗口回卷到 frontmatter。
+- Gateway / breath 的 direct 原文窗口在找不到 inline original text 时，会降级用 `source_ref_window()` 读 bucket 原文附近窗口。
+
+当前召回语义：
 
 - 命中节点展示压缩节点。
 - 有 `source_ref` 时读取附近约 500 字证据窗。
 - 没有 `source_ref` 时降级使用 MD moment 文本。
+
+已验证：
+
+- 本地 `python -m pytest tests -q`：428 passed, 7 skipped。
+- VPS 已部署到 `4e896b3`，memory / gateway health 均 ok。
+- VPS 刷新 moment 索引：160 buckets，276 parsed moments；DB 当前 294 moments，其中 263 条带 `source_ref`。
+- 刷新前后 DB `local_graph:` 边都是 12，未丢 worker 边。
+- VPS sample `source_ref_window()` 能读出 bucket 正文窗口，且不带 frontmatter。
+- VPS worker dry-run：候选 12，写入 0；relation_counts 仍是 `old_version: 6`、`same_topic: 2`、`context_of: 4`。
+
+仍未做：
+
+- 外部 transcript / raw chat source 的行号导入。
+- Dashboard 上展示 moment 对应原文窗口。
 
 ### 4. Dashboard 观察面板
 

@@ -84,7 +84,7 @@ Direct means the current query has reliable evidence in the bucket body/title/su
 Direct return:
 
 - Short bucket: return original bucket body.
-- Long bucket: return matched moment plus nearby original window.
+- Long bucket: return matched moment plus nearby original window. Prefer `source_ref` line windows when available; otherwise use the inline original text/window.
 - High-value bucket or detail query: return dehydrated bucket capsule.
 
 Related means the bucket was reached from a reliable direct seed.
