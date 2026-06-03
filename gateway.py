@@ -192,6 +192,9 @@ class GatewayService:
         self.direct_render_mode = self._normalize_direct_render_mode(
             self.gateway_cfg.get("direct_render_mode", "auto")
         )
+        self.retrieval_mode = self._normalize_retrieval_mode(
+            self.gateway_cfg.get("retrieval_mode", "graph")
+        )
         self.relationship_weather_budget = int(self.gateway_cfg.get("relationship_weather_budget", 220))
         self.relationship_weather_include_weekly = bool(
             self.gateway_cfg.get("relationship_weather_include_weekly", False)
@@ -606,18 +609,38 @@ class GatewayService:
             if self._should_inject_interval(session_id, self.core_memory_interval_rounds):
                 core_memory = await self._build_core_memory_block(all_buckets)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
-                all_moments, grouped_moments, moment_edges = self._refresh_moment_graph(all_buckets)
-                (
-                    recalled_moments,
-                    moment_candidates,
-                    suppressed_moments,
-                    suppressed_buckets,
-                ) = await self._select_dynamic_moments(
-                    current_user_query,
-                    session_id,
-                    all_buckets,
-                    grouped_moments,
-                )
+                if self.retrieval_mode == "bucket":
+                    selected_buckets, suppressed_buckets = await self._select_dynamic_buckets(
+                        current_user_query,
+                        session_id,
+                        all_buckets,
+                        search_query=recall_search_query(current_user_query, self.relevance_options),
+                    )
+                    for bucket in selected_buckets:
+                        bucket_id = str(bucket.get("id") or "")
+                        if not bucket_id:
+                            continue
+                        bucket_moments = self._direct_moments_for_bucket(bucket, current_user_query)
+                        moment = self._representative_moment(bucket_moments)
+                        if not moment:
+                            continue
+                        grouped_moments[bucket_id] = bucket_moments
+                        recalled_moments.append(moment)
+                    moment_candidates = list(recalled_moments)
+                    suppressed_moments = []
+                else:
+                    all_moments, grouped_moments, moment_edges = self._refresh_moment_graph(all_buckets)
+                    (
+                        recalled_moments,
+                        moment_candidates,
+                        suppressed_moments,
+                        suppressed_buckets,
+                    ) = await self._select_dynamic_moments(
+                        current_user_query,
+                        session_id,
+                        all_buckets,
+                        grouped_moments,
+                    )
             else:
                 suppressed_moments = []
                 suppressed_buckets = []
@@ -636,14 +659,17 @@ class GatewayService:
                 or self._should_inject_interval(session_id, self.favorite_memory_interval_rounds)
             ):
                 favorite_memory, favorite_ids = await self._build_favorite_memory_block(all_buckets, session_id)
-            related_memory = self._build_moment_diffused_memory_block(
-                recalled_moments,
-                moment_candidates,
-                all_moments,
-                moment_edges,
-                current_user_query,
-                context_mode=context_mode,
-            )
+            if self.retrieval_mode == "graph":
+                related_memory = self._build_moment_diffused_memory_block(
+                    recalled_moments,
+                    moment_candidates,
+                    all_moments,
+                    moment_edges,
+                    current_user_query,
+                    context_mode=context_mode,
+                )
+            else:
+                related_memory = ""
             reliable_dynamic_context = bool(recalled_memory.strip() or related_memory.strip())
             if self._should_inject_recent_context(
                 session_id,
@@ -2430,6 +2456,14 @@ class GatewayService:
             ]
         )
 
+    def _direct_moments_for_bucket(self, bucket: dict, query: str = "") -> list[dict]:
+        explicit_lookup = self._query_explicitly_requests_caution_memory(query)
+        return [
+            moment for moment in parse_bucket_moments(bucket, self.relevance_options)
+            if can_moment_be_recall_context(moment)
+            and can_moment_be_direct_seed(moment, explicit_lookup=explicit_lookup)
+        ]
+
     def _related_representative_moment(
         self,
         moments: list[dict],
@@ -2835,6 +2869,11 @@ class GatewayService:
     def _normalize_direct_render_mode(value: object) -> str:
         mode = str(value or "auto").strip().lower()
         return mode if mode in {"auto", "compact", "full"} else "auto"
+
+    @staticmethod
+    def _normalize_retrieval_mode(value: object) -> str:
+        mode = str(value or "graph").strip().lower()
+        return mode if mode in {"graph", "bucket"} else "graph"
 
     @staticmethod
     def _query_requests_direct_detail(query: str) -> bool:

@@ -925,23 +925,30 @@ gateway:
 
 `breath()` 也提供同名参数，默认 `auto`，让 MCP 和 Gateway 的直命中展示规则一致。
 
-### 暂缓的配置轴
+### retrieval_mode 配置轴
 
-`retrieval_mode` 可以后续再做，但不要第一步做：
+已完成，默认仍是 `graph`。
+
+配置：
 
 ```yaml
 gateway:
   retrieval_mode: graph   # graph | bucket
 ```
 
-- `graph`：p0 当前路线，moment + edges + diffusion。
-- `bucket`：接近 main 的旧桶召回味道，不走 moment graph，不扩散。
+- `graph`：默认。p0 当前路线，moment + edges + diffusion。
+- `bucket`：接近 main 的旧桶召回味道；不刷新 moment graph，不输出 `Diffused Memory`，只把可靠直命中的 bucket 按 `direct_render_mode` 渲染。
+- `breath(query=..., retrieval_mode="bucket")` 支持同名参数，方便本地和 MCP 侧对照测试。
 
-原因：当前真正的问题是 direct 展示太碎，不是召回判定整体错了。先只改返回形状，测试时更容易判断效果；如果同时改 `retrieval_mode`，会分不清是“召回变了”还是“返回形状变了”。
+已验证：
+
+- `breath(retrieval_mode="bucket")` 返回 `Recalled Memory`，不输出 `联想浮现`，不写 `memory_moments.sqlite`。
+- Gateway `gateway.retrieval_mode: bucket` 在 related budget 和 memory edge 存在时仍不输出 `Diffused Memory`，不刷新 moment graph。
 
 ### 实现边界
 
-- moment 仍用于召回判定、可靠性 gate、扩散 seed。
+- `graph` 模式下，moment 仍用于召回判定、可靠性 gate、扩散 seed。
+- `bucket` 模式下，bucket 级候选仍要过可靠性门；只临时解析当前 bucket 用于 direct 渲染，不写索引。
 - direct 最终展示按 bucket 渲染；同一 bucket 多个 moment 命中时只展示一次。
 - 脱水胶囊应单独 cache，避免和扩散摘要的短 summary 混用。
 - 扩散输出继续用 compact summary，不能因为 direct 改成原文而变吵。
@@ -949,5 +956,4 @@ gateway:
 当前剩余更像观察和体验调参，不是主链路缺口：
 
 - Dashboard 加只读观察面板：query 命中 moment、direct 渲染形状、diffusion path、被 gate 掉的原因。
-- 若小雨仍怀念 main 的“整桶味道”，再单独加 `retrieval_mode: bucket`，不要和 graph recall 的调参混在一轮。
 - 外部 transcript / raw chat source 若要接入，再把 `source_ref.source` 从 `bucket_content` 扩到 transcript 文件。

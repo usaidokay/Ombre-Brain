@@ -550,6 +550,43 @@ async def test_search_direct_high_value_long_bucket_uses_capsule(patch_breath):
 
 
 @pytest.mark.asyncio
+async def test_bucket_retrieval_mode_returns_direct_without_moment_graph_or_diffusion(patch_breath):
+    import server
+
+    direct = _bucket(
+        "A",
+        "## original\n小雨把蓝色偏好重新说清楚。",
+        name="蓝色偏好",
+        score=10.0,
+    )
+    related = _bucket(
+        "B",
+        "这条远处相关记忆不应该在 bucket retrieval mode 里扩散出来。",
+        name="远处相关",
+        score=9.0,
+    )
+    bucket_mgr = patch_breath(
+        [direct, related],
+        search_ids=["A"],
+        edges=[{"source": "A", "target": "B", "relation_type": "relates_to"}],
+    )
+
+    result = await server.breath(
+        query="蓝色偏好",
+        include_related=True,
+        retrieval_mode="bucket",
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "bucket_original" in result
+    assert "蓝色偏好重新说清楚" in result
+    assert "=== 联想浮现 ===" not in result
+    assert "远处相关记忆" not in result
+    assert bucket_mgr.touched == ["A"]
+    assert server.memory_moment_store.stats()["moments"] == 0
+
+
+@pytest.mark.asyncio
 async def test_search_temperature_moments_are_context_not_direct_seed(patch_breath):
     import server
 

@@ -95,6 +95,11 @@ Related return:
 - Include path/relation when it helps the model understand why it appeared.
 - Never let related memory pretend to be the current fact.
 
+Retrieval mode:
+
+- `graph` is the default runtime: direct recall uses admitted moments and related memory can diffuse through approved edges.
+- `bucket` is an opt-in comparison mode: direct recall uses reliable bucket candidates and the same direct render rules, but skips moment graph refresh and does not inject related memory.
+
 Context-only sections:
 
 - `comment`

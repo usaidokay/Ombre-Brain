@@ -2254,6 +2254,53 @@ def test_gateway_diffused_memory_uses_summary_only_for_moments(
     assert "扩散目标原文-绝对不能出现 ABC123" not in injected
 
 
+def test_gateway_bucket_retrieval_mode_skips_moment_graph_diffusion(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        retrieval_mode="bucket",
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=1200,
+        inject_total_budget=2200,
+        current_inner_state_interval_rounds=0,
+    )
+    seed_id, _target_id = _create_moment_diffusion_pair(
+        bucket_mgr,
+        cfg,
+        target_name="不该扩散目标",
+        target_content="bucket 模式下这条远处原文不该出现。",
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 2}
+    app, service, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(seed_id, 0.99)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-bucket-retrieval",
+            },
+            json={"messages": [{"role": "user", "content": "种子项目现在怎样"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Recalled Memory" in injected
+    assert "种子项目现在需要被直接召回" in injected
+    assert "Diffused Memory" not in injected
+    assert "不该扩散目标" not in injected
+    assert service.memory_moment_store.stats()["moments"] == 0
+
+
 def test_gateway_direct_short_bucket_renders_original(
     monkeypatch,
     test_config,

@@ -2031,6 +2031,36 @@ def _normalize_direct_render_mode(value: object) -> str:
     return mode if mode in {"auto", "compact", "full"} else "auto"
 
 
+def _normalize_retrieval_mode(value: object) -> str:
+    mode = str(value or "graph").strip().lower()
+    return mode if mode in {"graph", "bucket"} else "graph"
+
+
+def _bucket_relevance_node(bucket: dict, score: float = 0.0) -> dict:
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    return {
+        "id": bucket.get("id"),
+        "text": strip_wikilinks(str(bucket.get("content") or "")),
+        "score": score,
+        "metadata": {
+            "bucket_name": meta.get("name") or bucket.get("id"),
+            "bucket_tags": meta.get("tags") or [],
+            "bucket_domain": meta.get("domain") or [],
+            "annotation_summary": meta.get("annotation_summary") or meta.get("summary") or "",
+            "evidence_spans": meta.get("evidence_spans") or [],
+        },
+    }
+
+
+def _direct_moments_for_bucket(bucket: dict, query: str = "") -> list[dict]:
+    explicit_lookup = _query_explicitly_requests_archive_memory(query)
+    return [
+        moment for moment in parse_bucket_moments(bucket, _recall_relevance_options())
+        if can_moment_be_recall_context(moment)
+        and can_moment_be_direct_seed(moment, explicit_lookup=explicit_lookup)
+    ]
+
+
 def _query_requests_direct_detail(query: str) -> bool:
     text = str(query or "").strip().lower()
     if not text:
@@ -3220,6 +3250,7 @@ async def breath(
     debug: bool = False,
     surface: str = "manual",
     direct_render_mode: str = "auto",
+    retrieval_mode: str = "graph",
 ) -> str:
     """读取记忆,不写入。
     调用方式: 新对话用 breath(is_session_start=True); 查过去用 breath(query="主题词"); 只读模型感受用 breath(domain="feel"); 只读悄悄话用 breath(domain="whisper")。
@@ -3241,6 +3272,7 @@ async def breath(
     surface_key = str(surface or "manual").strip().lower()
     auto_surface = surface_key in {"auto", "automatic", "bridge", "gateway"}
     direct_render_mode = _normalize_direct_render_mode(direct_render_mode)
+    retrieval_mode = _normalize_retrieval_mode(retrieval_mode)
     domain_key = domain.strip().lower()
 
     # --- Feel/whisper retrieval: independent read-only channels ---
@@ -3513,6 +3545,108 @@ async def breath(
     except Exception as e:
         logger.warning(f"Failed to list buckets for moment recall / moment 召回列桶失败: {e}")
         all_buckets = matches
+
+    if retrieval_mode == "bucket":
+        direct_results = []
+        token_used = 0
+        displayed_moment_ids: list[str] = []
+        returned_moments: list[dict] = []
+        suppressed_buckets = []
+        seen_bucket_ids: set[str] = set()
+        for bucket in matches:
+            if len(direct_results) >= max_results or token_used >= max_tokens:
+                break
+            bucket_id = str(bucket.get("id") or "")
+            if not bucket_id or bucket_id in seen_bucket_ids:
+                continue
+            seed = seed_diagnostics.get(bucket_id, {})
+            decision = _recall_policy().assess(
+                query,
+                _bucket_relevance_node(bucket, bucket.get("score", 0.0)),
+                has_topic_evidence=_bucket_has_query_topic_evidence(query, bucket),
+                semantic_score=seed.get("embedding_score"),
+                auto=auto_surface,
+            )
+            if not decision.admit_direct:
+                suppressed_buckets.append(
+                    {
+                        "bucket_id": bucket_id,
+                        "bucket_name": (bucket.get("metadata") or {}).get("name") or bucket_id,
+                        "admission_reason": decision.reason,
+                        "recall_policy_debug": decision.debug,
+                    }
+                )
+                continue
+            bucket_moments = _direct_moments_for_bucket(bucket, query)
+            moment = _representative_moment(bucket_moments)
+            if not moment:
+                continue
+            grouped = {bucket_id: bucket_moments}
+            entry = await _format_direct_bucket(
+                bucket,
+                moment,
+                grouped,
+                max_tokens - token_used,
+                query_text=query,
+                direct_render_mode=direct_render_mode,
+            )
+            if not entry:
+                break
+            entry_tokens = count_tokens_approx(entry)
+            if token_used + entry_tokens > max_tokens:
+                break
+            await bucket_mgr.touch(bucket_id)
+            direct_results.append(entry)
+            returned_moments.append(moment)
+            displayed_moment_ids.append(str(moment.get("moment_id") or ""))
+            seen_bucket_ids.add(bucket_id)
+            token_used += entry_tokens
+
+        dream_block = "" if auto_surface else await dream_engine.surface_for_breath(
+            query=query,
+            valence=valence,
+            arousal=arousal,
+            is_session_start=is_session_start,
+            embedding_engine=embedding_engine,
+        )
+        response_parts = []
+        response_sections = []
+        if direct_results:
+            response_parts.append("=== 直接命中记忆 ===\n" + "\n---\n".join(direct_results))
+            response_sections.append("direct")
+        if dream_block:
+            response_sections.append("dream")
+        _write_breath_recall_diagnostics(
+            query=query,
+            recall_thresholds={**recall_thresholds, "retrieval_mode": "bucket"},
+            seed_diagnostics=seed_diagnostics,
+            pre_gate_candidates=returned_moments,
+            gated_candidates=returned_moments,
+            reranked_candidates=returned_moments,
+            returned_moments=returned_moments,
+            suppressed_candidates=[],
+            displayed_moment_ids=displayed_moment_ids,
+            secondary_moment_ids=[],
+            related_source_bucket_ids=[],
+            related_included=False,
+            drift_included=False,
+            dream_included=bool(dream_block),
+            response_sections=response_sections,
+        )
+        if debug and suppressed_buckets:
+            response_parts.append(
+                "=== suppressed_bucket_candidates ===\n"
+                + "\n".join(
+                    f"- [bucket_id:{item['bucket_id']}] reason={item['admission_reason']}"
+                    for item in suppressed_buckets[:10]
+                )
+            )
+        if not response_parts:
+            return dream_block or "没有找到可靠命中。"
+        response_text = "\n\n".join(response_parts)
+        if dream_block:
+            response_text += "\n\n" + dream_block
+        return response_text
 
     bucket_map = {bucket["id"]: bucket for bucket in all_buckets if bucket.get("id")}
     _, grouped_moments, _ = await _refresh_moment_graph(all_buckets)
