@@ -1161,12 +1161,13 @@
   .gateway-injection-controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
-  .gateway-injection-controls input {
-    min-width: 220px;
+  .gateway-injection-controls input[type="text"] {
+    width: min(260px, 100%);
+    min-width: 0;
     padding: 8px 10px;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -1174,7 +1175,18 @@
     color: var(--text);
     font-size: 12px;
   }
+  .gateway-injection-controls input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--accent);
+  }
   .gateway-injection-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-dim);
     font-size: 12px;
   }
@@ -1186,11 +1198,64 @@
     color: var(--accent);
     cursor: pointer;
   }
+  .gateway-injections-content {
+    text-align: left;
+  }
+  .gateway-injection-empty {
+    color: var(--text-dim);
+    font-size: 12px;
+    padding: 8px 0 2px;
+  }
+  .gateway-injection-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .gateway-injection-item {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-solid);
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.55;
+    text-align: left;
+  }
+  .gateway-injection-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .gateway-injection-title {
+    color: var(--accent);
+    font-weight: 600;
+    min-width: 0;
+  }
+  .gateway-injection-time {
+    color: var(--text-light);
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .gateway-injection-lines {
+    display: grid;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .gateway-injection-line {
+    color: var(--text-dim);
+    white-space: pre-wrap;
+  }
+  .gateway-injection-line .label {
+    color: var(--text-light);
+  }
   .gateway-context-preview {
     color: var(--text-dim);
     font-size: 11px;
     line-height: 1.7;
-    margin-top: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
     white-space: pre-wrap;
   }
 
@@ -1547,7 +1612,9 @@
       <label><input type="checkbox" id="gateway-include-context" /> 包含 context</label>
       <button onclick="loadGatewayInjections()">刷新</button>
     </div>
-    <div id="gateway-injections-content" class="loading">打开 Breath 模拟时读取最近注入记录。</div>
+    <div id="gateway-injections-content" class="gateway-injections-content">
+      <div class="gateway-injection-empty">打开 Breath 模拟时读取最近注入记录。</div>
+    </div>
   </div>
 </div>
 
@@ -3621,7 +3688,7 @@ async function loadGatewayInjections() {
   var includeInput = document.getElementById('gateway-include-context');
   var sessionId = sessionInput ? sessionInput.value.trim() : '';
   var includeContext = includeInput && includeInput.checked;
-  target.innerHTML = '<div class="loading">读取 Gateway 注入记录…</div>';
+  target.innerHTML = '<div class="gateway-injection-empty">读取 Gateway 注入记录…</div>';
   var url = BASE + '/api/gateway-injections?limit=10&include_context=' + (includeContext ? '1' : '0');
   if (sessionId) url += '&session_id=' + encodeURIComponent(sessionId);
   try {
@@ -3637,11 +3704,11 @@ async function loadGatewayInjections() {
 function renderGatewayInjections(data) {
   if (!data || data.status !== 'ok') {
     var error = data && data.error ? data.error : '无 Gateway 注入记录';
-    return '<div class="loading">' + esc(error) + '</div>';
+    return '<div class="gateway-injection-empty">' + esc(error) + '</div>';
   }
   var items = Array.isArray(data.items) ? data.items : [];
-  if (!items.length) return '<div class="loading">暂无 Gateway 注入记录。</div>';
-  return '<div class="moment-list">' + items.map(renderGatewayInjectionItem).join('') + '</div>';
+  if (!items.length) return '<div class="gateway-injection-empty">暂无 Gateway 注入记录。</div>';
+  return '<div class="gateway-injection-list">' + items.map(renderGatewayInjectionItem).join('') + '</div>';
 }
 
 function renderGatewayInjectionItem(item) {
@@ -3663,17 +3730,19 @@ function renderGatewayInjectionItem(item) {
   ];
   if (payload.context_mode) chips.push({ text: 'mode ' + payload.context_mode });
   var contextPreview = gatewayContextPreview(payload);
-  return '<div class="moment-item">' +
-    '<div class="moment-head">' +
-      '<div class="moment-title">' + esc(row.session_id || 'session') + '</div>' +
-      '<div class="moment-source">' + esc(row.created_at || '') + '</div>' +
+  return '<div class="gateway-injection-item">' +
+    '<div class="gateway-injection-head">' +
+      '<div class="gateway-injection-title">' + esc(row.session_id || 'session') + '</div>' +
+      '<div class="gateway-injection-time">' + esc(row.created_at || '') + '</div>' +
     '</div>' +
     renderMomentChips(chips) +
-    '<div class="diffusion-path">query: ' + esc(payload.query_preview || '') + '</div>' +
-    '<div class="diffusion-path">buckets: ' + esc(injected.slice(0, 8).join(', ') || '—') + '</div>' +
-    '<div class="diffusion-path">moments: ' + esc(recalledMoments.concat(diffusedMoments).slice(0, 8).join(', ') || '—') + '</div>' +
-    (directRender ? '<div class="diffusion-path">direct render: ' + esc(directRender) + '</div>' : '') +
-    (chainDebug ? '<div class="diffusion-path">diffused chain: ' + esc(chainDebug) + '</div>' : '') +
+    '<div class="gateway-injection-lines">' +
+      '<div class="gateway-injection-line"><span class="label">query:</span> ' + esc(payload.query_preview || '') + '</div>' +
+      '<div class="gateway-injection-line"><span class="label">buckets:</span> ' + esc(injected.slice(0, 8).join(', ') || '—') + '</div>' +
+      '<div class="gateway-injection-line"><span class="label">moments:</span> ' + esc(recalledMoments.concat(diffusedMoments).slice(0, 8).join(', ') || '—') + '</div>' +
+      (directRender ? '<div class="gateway-injection-line"><span class="label">direct render:</span> ' + esc(directRender) + '</div>' : '') +
+      (chainDebug ? '<div class="gateway-injection-line"><span class="label">diffused chain:</span> ' + esc(chainDebug) + '</div>' : '') +
+    '</div>' +
     (contextPreview ? '<div class="gateway-context-preview">' + esc(contextPreview) + '</div>' : '') +
   '</div>';
 }

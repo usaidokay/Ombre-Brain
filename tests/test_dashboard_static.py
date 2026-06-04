@@ -86,6 +86,12 @@ def test_dashboard_breath_view_loads_gateway_injection_debug():
     assert "function gatewayChainDebugSummaries(payload)" in html
     assert "direct render:" in html
     assert "diffused chain:" in html
+    assert 'class="gateway-injections-content"' in html
+    assert 'class="gateway-injection-list"' in html
+    assert 'class="gateway-injection-item"' in html
+    assert '.gateway-injection-controls input[type="text"]' in html
+    assert '.gateway-injection-controls input[type="checkbox"]' in html
+    assert "gateway-injection-empty" in html
     assert "row.direct_render" in html
     assert "diffused_moment_debug" in html
     assert "Gateway 最近注入" in html
