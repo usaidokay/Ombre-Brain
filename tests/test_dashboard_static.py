@@ -105,6 +105,8 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert 'id="cfg-chain-hops"' in html
     assert 'id="cfg-chain-confidence"' in html
     assert 'id="cfg-chain-frontier"' in html
+    assert "breath 和 Gateway 都会立即读取新的扩散参数" in html
+    assert "Gateway 需要重启" not in html
     assert "cfg.gateway.cooldown_hours" in html
     assert "cfg.gateway.skip_recent_rounds" in html
     assert "cfg.gateway.direct_render_mode" in html

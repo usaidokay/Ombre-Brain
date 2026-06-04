@@ -345,17 +345,15 @@ def test_gateway_state_store_cooldown_curve(tmp_path):
 
 
 def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_config, bucket_mgr):
-    app, service, _, _ = _build_service(
-        monkeypatch,
-        _gateway_config(
-            test_config,
-            cooldown_hours=6,
-            skip_recent_rounds=5,
-            direct_render_mode="auto",
-            retrieval_mode="graph",
-        ),
-        bucket_mgr,
+    cfg = _gateway_config(
+        test_config,
+        cooldown_hours=6,
+        skip_recent_rounds=5,
+        direct_render_mode="auto",
+        retrieval_mode="graph",
     )
+    cfg["memory_diffusion"] = {"top_k": 4, "chain_walk_enabled": False}
+    app, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
 
     with TestClient(app) as client:
         response = client.post(
@@ -367,7 +365,14 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
                     "skip_recent_rounds": 3,
                     "direct_render_mode": "full",
                     "retrieval_mode": "bucket",
-                }
+                },
+                "memory_diffusion": {
+                    "top_k": 3,
+                    "min_activation": 0.22,
+                    "chain_walk_enabled": True,
+                    "chain_max_hops": 8,
+                    "chain_min_confidence": 0.76,
+                },
             },
         )
 
@@ -377,13 +382,24 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         "gateway.skip_recent_rounds",
         "gateway.direct_render_mode",
         "gateway.retrieval_mode",
+        "memory_diffusion.top_k",
+        "memory_diffusion.min_activation",
+        "memory_diffusion.chain_walk_enabled",
+        "memory_diffusion.chain_max_hops",
+        "memory_diffusion.chain_min_confidence",
     ]
     assert service.cooldown_hours == pytest.approx(2.5)
     assert service.skip_recent_rounds == 3
     assert service.direct_render_mode == "full"
     assert service.retrieval_mode == "bucket"
+    assert service.diffusion_options.top_k == 3
+    assert service.diffusion_options.min_activation == pytest.approx(0.22)
+    assert service.diffusion_options.chain_walk_enabled is True
+    assert service.diffusion_options.chain_max_hops == 8
+    assert service.diffusion_options.chain_min_confidence == pytest.approx(0.76)
     assert response.json()["gateway"]["direct_render_mode"] == "full"
     assert response.json()["gateway"]["retrieval_mode"] == "bucket"
+    assert response.json()["memory_diffusion"]["chain_walk_enabled"] is True
 
 
 def test_gateway_defaults_openai_session_id(monkeypatch, test_config, bucket_mgr):

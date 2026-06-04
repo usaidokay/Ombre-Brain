@@ -312,6 +312,22 @@ class GatewayService:
             "retrieval_mode": self.retrieval_mode,
         }
 
+    def _memory_diffusion_config_payload(self) -> dict[str, Any]:
+        options = self.diffusion_options
+        return {
+            "enabled": options.enabled,
+            "max_hops": options.max_hops,
+            "top_k": options.top_k,
+            "min_activation": options.min_activation,
+            "max_paths_per_hit": options.max_paths_per_hit,
+            "chain_walk_enabled": options.chain_walk_enabled,
+            "chain_max_hops": options.chain_max_hops,
+            "chain_min_strength": options.chain_min_strength,
+            "chain_min_confidence": options.chain_min_confidence,
+            "chain_min_relation_priority": options.chain_min_relation_priority,
+            "chain_max_frontier": options.chain_max_frontier,
+        }
+
     def _apply_gateway_memory_config(self, payload: dict[str, Any]) -> list[str]:
         updated: list[str] = []
         if "cooldown_hours" in payload:
@@ -332,13 +348,44 @@ class GatewayService:
             updated.append("gateway.retrieval_mode")
         return updated
 
+    def _apply_memory_diffusion_config(self, payload: dict[str, Any]) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        keys = (
+            "enabled",
+            "max_hops",
+            "top_k",
+            "min_activation",
+            "max_paths_per_hit",
+            "chain_walk_enabled",
+            "chain_max_hops",
+            "chain_min_strength",
+            "chain_min_confidence",
+            "chain_min_relation_priority",
+            "chain_max_frontier",
+        )
+        diffusion_cfg = self.config.setdefault("memory_diffusion", {})
+        requested = [key for key in keys if key in payload]
+        for key in requested:
+            diffusion_cfg[key] = payload[key]
+        if not requested:
+            return []
+        self.diffusion_options = diffusion_options_from_config(self.config)
+        normalized = self._memory_diffusion_config_payload()
+        for key in requested:
+            diffusion_cfg[key] = normalized[key]
+        return [f"memory_diffusion.{key}" for key in requested]
+
     async def handle_config(self, request: Request) -> JSONResponse:
         auth_result = self._authorize(request.headers.get("Authorization", ""))
         if auth_result is not None:
             return auth_result
 
         if request.method == "GET":
-            return JSONResponse({"gateway": self._gateway_memory_config_payload()})
+            return JSONResponse({
+                "gateway": self._gateway_memory_config_payload(),
+                "memory_diffusion": self._memory_diffusion_config_payload(),
+            })
 
         try:
             body = await request.json()
@@ -347,14 +394,25 @@ class GatewayService:
         if not isinstance(body, dict):
             return JSONResponse({"error": "invalid config"}, status_code=400)
 
-        payload = body.get("gateway", body)
-        if not isinstance(payload, dict):
+        gateway_payload = body.get("gateway")
+        diffusion_payload = body.get("memory_diffusion")
+        if gateway_payload is None and diffusion_payload is None:
+            gateway_payload = body
+        if gateway_payload is not None and not isinstance(gateway_payload, dict):
             return JSONResponse({"error": "invalid gateway config"}, status_code=400)
-        updated = self._apply_gateway_memory_config(payload)
+        if diffusion_payload is not None and not isinstance(diffusion_payload, dict):
+            return JSONResponse({"error": "invalid memory diffusion config"}, status_code=400)
+
+        updated = []
+        if gateway_payload is not None:
+            updated.extend(self._apply_gateway_memory_config(gateway_payload))
+        if diffusion_payload is not None:
+            updated.extend(self._apply_memory_diffusion_config(diffusion_payload))
         return JSONResponse({
             "ok": True,
             "updated": updated,
             "gateway": self._gateway_memory_config_payload(),
+            "memory_diffusion": self._memory_diffusion_config_payload(),
         })
 
     async def handle_health(self, request: Request) -> JSONResponse:

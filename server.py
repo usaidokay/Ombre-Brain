@@ -168,7 +168,9 @@ def _split_csv(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-async def _hot_update_gateway_config(gateway_body: dict) -> str | None:
+async def _hot_update_gateway_config(gateway_payload: dict) -> str | None:
+    if not gateway_payload:
+        return None
     admin_url = os.environ.get("OMBRE_GATEWAY_ADMIN_URL", "").strip()
     token = os.environ.get("OMBRE_GATEWAY_TOKEN", "").strip()
     if not admin_url or not token:
@@ -178,7 +180,7 @@ async def _hot_update_gateway_config(gateway_body: dict) -> str | None:
             response = await client.post(
                 admin_url,
                 headers={"Authorization": f"Bearer {token}"},
-                json={"gateway": gateway_body},
+                json=gateway_payload,
             )
         if response.status_code >= 400:
             return f"gateway_hot_reload_failed:{response.status_code}"
@@ -6281,7 +6283,7 @@ async def api_config_update(request):
         updated.append("merge_threshold")
 
     # --- Gateway memory surfacing config ---
-    gateway_hot_update_body = None
+    gateway_hot_update_payload = {}
     if "gateway" in body:
         g = body["gateway"]
         gateway_cfg = config.setdefault("gateway", {})
@@ -6302,9 +6304,8 @@ async def api_config_update(request):
             gateway_cfg["retrieval_mode"] = _normalize_retrieval_mode(g["retrieval_mode"])
             gateway_hot_update_body["retrieval_mode"] = gateway_cfg["retrieval_mode"]
             updated.append("gateway.retrieval_mode")
-        hot_update_status = await _hot_update_gateway_config(gateway_hot_update_body)
-        if hot_update_status:
-            updated.append(hot_update_status)
+        if gateway_hot_update_body:
+            gateway_hot_update_payload["gateway"] = gateway_hot_update_body
 
     # --- Memory diffusion config ---
     if "memory_diffusion" in body:
@@ -6314,7 +6315,11 @@ async def api_config_update(request):
             diffusion_cfg[key] = value
             updated.append(f"memory_diffusion.{key}")
         if diffusion_payload:
-            updated.append("gateway_restart_required_for_memory_diffusion")
+            gateway_hot_update_payload["memory_diffusion"] = diffusion_payload
+
+    hot_update_status = await _hot_update_gateway_config(gateway_hot_update_payload)
+    if hot_update_status:
+        updated.append(hot_update_status)
 
     # --- Reflection config ---
     if "reflection" in body:

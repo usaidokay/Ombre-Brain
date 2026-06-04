@@ -1970,10 +1970,21 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["gateway"]["direct_render_mode"] == "full"
     assert runtime_config["gateway"]["retrieval_mode"] == "bucket"
     assert hot_update_calls[-1] == {
-        "cooldown_hours": 6,
-        "skip_recent_rounds": 5,
-        "direct_render_mode": "full",
-        "retrieval_mode": "bucket",
+        "gateway": {
+            "cooldown_hours": 6,
+            "skip_recent_rounds": 5,
+            "direct_render_mode": "full",
+            "retrieval_mode": "bucket",
+        },
+        "memory_diffusion": {
+            "enabled": True,
+            "top_k": 3,
+            "min_activation": 0.22,
+            "chain_walk_enabled": True,
+            "chain_max_hops": 8,
+            "chain_min_confidence": 0.76,
+            "chain_max_frontier": 36,
+        },
     }
     assert runtime_config["memory_diffusion"]["enabled"] is True
     assert runtime_config["memory_diffusion"]["top_k"] == 3
@@ -1984,7 +1995,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["memory_diffusion"]["chain_max_frontier"] == 36
     assert runtime_config["memory_diffusion"]["max_hops"] == 2
     assert "memory_diffusion.chain_walk_enabled" in payload["updated"]
-    assert "gateway_restart_required_for_memory_diffusion" in payload["updated"]
+    assert "gateway_restart_required_for_memory_diffusion" not in payload["updated"]
+    assert "gateway_hot_reloaded" in payload["updated"]
     assert runtime_config["reflection"]["daily_enabled"] is True
     assert runtime_config["reflection"]["memory_affect_anchor_enabled"] is False
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True
