@@ -509,6 +509,16 @@
     padding-top: 7px;
     border-top: 1px solid var(--border);
   }
+  .moment-edge-list {
+    margin-top: 12px;
+  }
+  .moment-edge-title {
+    color: var(--text-light);
+    font-size: 11px;
+    margin: 0 0 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
 
   .config-section {
     margin-bottom: 28px;
@@ -2324,6 +2334,7 @@ function renderBucketMoments(data) {
   }
   var layer = data.bucket_layer_debug || {};
   var moments = Array.isArray(data.moments) ? data.moments : [];
+  var edges = Array.isArray(data.edges) ? data.edges : [];
   var chips = [
     { text: 'bucket layer ' + (layer.layer || 'unknown') },
     { text: 'direct ' + (layer.can_direct_seed ? 'yes' : 'no'), state: layer.can_direct_seed ? 'allow' : 'block' },
@@ -2335,7 +2346,7 @@ function renderBucketMoments(data) {
   var body = moments.length
     ? '<div class="moment-list">' + moments.map(renderMomentItem).join('') + '</div>'
     : '<div class="loading">这条 bucket 暂时没有拆出 moment。</div>';
-  return '<h3>Moments</h3>' + renderMomentChips(chips) + body;
+  return '<h3>Moments</h3>' + renderMomentChips(chips) + body + renderMomentEdges(edges);
 }
 
 function renderMomentItem(moment, index) {
@@ -2369,6 +2380,33 @@ function renderMomentChips(chips) {
   return '<div class="moment-summary">' + chips.map(function(chip) {
     return '<span class="score-chip ' + (chip.state || '') + '">' + esc(chip.text) + '</span>';
   }).join('') + '</div>';
+}
+
+function renderMomentEdges(edges) {
+  if (!edges.length) {
+    return '<div class="moment-edge-list"><div class="moment-edge-title">Moment Edges</div><div class="loading">无 edge</div></div>';
+  }
+  return '<div class="moment-edge-list">' +
+    '<div class="moment-edge-title">Moment Edges</div>' +
+    edges.map(renderMomentEdge).join('') +
+  '</div>';
+}
+
+function renderMomentEdge(edge) {
+  var e = edge || {};
+  var chips = [
+    { text: e.relation_type || 'relates_to' },
+  ];
+  if (e.confidence != null) chips.push({ text: 'confidence ' + Number(e.confidence).toFixed(2) });
+  if (e.reason) chips.push({ text: String(e.reason).slice(0, 80) });
+  var line = (e.source || 'unknown') + ' → ' + (e.target || 'unknown');
+  return '<div class="moment-item">' +
+    '<div class="moment-head">' +
+      '<div class="moment-title">' + esc(line) + '</div>' +
+      '<div class="moment-source">' + esc(e.created_at || '') + '</div>' +
+    '</div>' +
+    renderMomentChips(chips) +
+  '</div>';
 }
 
 function formatMomentSource(ref) {

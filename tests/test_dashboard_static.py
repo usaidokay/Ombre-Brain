@@ -35,8 +35,12 @@ def test_dashboard_bucket_detail_loads_moment_diagnostics():
     assert "BASE + '/api/moments?bucket_id='" in html
     assert "function renderBucketMoments(data)" in html
     assert "function renderMomentItem(moment, index)" in html
+    assert "function renderMomentEdges(edges)" in html
+    assert "function renderMomentEdge(edge)" in html
+    assert "Moment Edges" in html
     assert "runtime_gate" in html
     assert ".detail-moments" in html
+    assert ".moment-edge-list" in html
 
 
 def test_dashboard_breath_debug_loads_diffusion_paths():
