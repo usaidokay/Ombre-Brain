@@ -146,6 +146,29 @@ def test_dashboard_exposes_profile_fact_page():
     assert ".profile-proposal-panel" in html
 
 
+def test_dashboard_exposes_word_map_page():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+
+    assert 'data-tab="word-map"' in html
+    assert 'id="word-map-view"' in html
+    assert 'id="word-map-summary"' in html
+    assert 'id="word-map-nodes"' in html
+    assert 'id="word-map-edges"' in html
+    assert 'id="identity-aliases"' in html
+    assert 'id="word-map-boundary"' in html
+    assert "loadWordMap()" in html
+    assert "rebuildWordMap()" in html
+    assert "rebuildIdentitySemantics()" in html
+    assert "BASE + '/api/word-map?nodes=20&edges=20'" in html
+    assert "BASE + '/api/word-map/rebuild'" in html
+    assert "BASE + '/api/word-map/cards" not in html
+    assert "BASE + '/api/identity-semantics?limit=50'" in html
+    assert "BASE + '/api/identity-semantics/rebuild'" in html
+    assert ".word-map-card" in html
+    assert "不会自动注入 Gateway" in html
+    assert "未配置私有 canonical" in html
+
+
 def test_dashboard_exposes_gateway_memory_cooldown_settings():
     html = Path("dashboard.html").read_text(encoding="utf-8")
     load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]

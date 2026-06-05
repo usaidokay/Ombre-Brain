@@ -1759,6 +1759,97 @@
     justify-content: flex-end;
     min-width: 260px;
   }
+  .word-map-shell { max-width: 1120px; margin: 0 auto; }
+  .word-map-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  .word-map-toolbar h2 {
+    font-family: 'Cormorant Garamond', serif;
+    color: var(--accent);
+    font-size: 28px;
+    font-weight: 600;
+  }
+  .word-map-toolbar p {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .word-map-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .word-map-actions button {
+    min-height: 32px;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .word-map-actions button:hover {
+    border-color: var(--border-strong);
+    color: var(--accent);
+  }
+  .word-map-summary {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .word-map-message {
+    min-height: 18px;
+    margin-bottom: 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .word-map-message.error { color: var(--negative); }
+  .word-map-message.ok { color: var(--positive); }
+  .word-map-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .word-map-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    min-height: 180px;
+  }
+  .word-map-panel h3 {
+    color: var(--accent);
+    font-size: 14px;
+    margin-bottom: 10px;
+  }
+  .word-map-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .word-map-card {
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .word-map-card:first-child {
+    border-top: none;
+    padding-top: 0;
+  }
+  .word-map-card strong {
+    display: block;
+    color: var(--text);
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
 
   @media (max-width: 768px) {
     .header { padding: 20px; flex-wrap: wrap; }
@@ -1799,6 +1890,9 @@
     .profile-actions { justify-content: flex-start; min-width: 0; }
     .profile-meta-grid { grid-template-columns: 1fr; }
     .profile-proposal-form { grid-template-columns: 1fr; }
+    .word-map-toolbar { align-items: flex-start; flex-direction: column; }
+    .word-map-actions { justify-content: flex-start; }
+    .word-map-grid { grid-template-columns: 1fr; }
     .reflection-toolbar { align-items: flex-start; flex-direction: column; }
     .reflection-board { grid-template-columns: 1fr; }
     .reflection-day-panel { height: auto; max-height: none; }
@@ -1824,6 +1918,7 @@
   <div class="tab" data-tab="dreams">梦境</div>
   <div class="tab" data-tab="persona">Persona</div>
   <div class="tab" data-tab="profile">画像</div>
+  <div class="tab" data-tab="word-map">词图</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="memory-config">记忆浮现</div>
@@ -2095,6 +2190,42 @@
     <div class="profile-summary" id="profile-summary">加载中…</div>
     <div class="profile-list" id="profile-facts-list">
       <div class="loading">加载画像事实…</div>
+    </div>
+  </div>
+</div>
+
+<div class="content" id="word-map-view" style="display:none">
+  <div class="word-map-shell">
+    <div class="word-map-toolbar">
+      <div>
+        <h2>Word Map Lite</h2>
+        <p>只读查看派生词图和私有 identity alias；不会自动注入 Gateway。</p>
+      </div>
+      <div class="word-map-actions">
+        <button type="button" onclick="loadWordMap()">刷新</button>
+        <button type="button" onclick="rebuildWordMap()">重建 Word Map</button>
+        <button type="button" onclick="rebuildIdentitySemantics()">重建 Private Alias</button>
+      </div>
+    </div>
+    <div class="word-map-summary" id="word-map-summary">加载中…</div>
+    <div class="word-map-message" id="word-map-message"></div>
+    <div class="word-map-grid">
+      <section class="word-map-panel">
+        <h3>Top Nodes</h3>
+        <div class="word-map-list" id="word-map-nodes"><div class="loading">加载中…</div></div>
+      </section>
+      <section class="word-map-panel">
+        <h3>Co-occurrence Edges</h3>
+        <div class="word-map-list" id="word-map-edges"><div class="loading">加载中…</div></div>
+      </section>
+      <section class="word-map-panel">
+        <h3>Private Alias</h3>
+        <div class="word-map-list" id="identity-aliases"><div class="loading">加载中…</div></div>
+      </section>
+      <section class="word-map-panel">
+        <h3>Boundary</h3>
+        <div class="word-map-list" id="word-map-boundary"><div class="loading">加载中…</div></div>
+      </section>
     </div>
   </div>
 </div>
@@ -2392,6 +2523,8 @@ let renderedBuckets = [];
 let profileFacts = [];
 let profileFactProposals = [];
 let anchorProposals = [];
+let wordMapData = null;
+let identitySemanticData = null;
 let currentFilter = 'all';
 let bucketBulkMode = false;
 let selectedBucketIds = new Set();
@@ -2512,6 +2645,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('dreams-view').style.display = target === 'dreams' ? '' : 'none';
     document.getElementById('persona-view').style.display = target === 'persona' ? '' : 'none';
     document.getElementById('profile-view').style.display = target === 'profile' ? '' : 'none';
+    document.getElementById('word-map-view').style.display = target === 'word-map' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
@@ -2521,6 +2655,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (target === 'dreams') loadDreams();
     if (target === 'persona') loadPersona();
     if (target === 'profile') loadProfileFacts();
+    if (target === 'word-map') loadWordMap();
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
@@ -2553,6 +2688,7 @@ async function loadBuckets() {
     if (getActiveTab() === 'reflection') renderReflectionReview();
     if (getActiveTab() === 'dreams') loadDreams();
     if (getActiveTab() === 'profile') loadProfileFacts();
+    if (getActiveTab() === 'word-map') loadWordMap();
   } catch (e) {
     document.getElementById('bucket-list').innerHTML = '<div class="loading">加载失败: ' + esc(e.message) + '</div>';
   }
@@ -3091,6 +3227,177 @@ function editProfileFact(id) {
     reflection: sections.reflection || '',
     followup: sections.followup || ''
   });
+}
+
+function setWordMapMessage(message, tone) {
+  var el = document.getElementById('word-map-message');
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.remove('ok', 'error');
+  if (tone) el.classList.add(tone);
+}
+
+async function loadWordMap() {
+  var summary = document.getElementById('word-map-summary');
+  var nodes = document.getElementById('word-map-nodes');
+  var edges = document.getElementById('word-map-edges');
+  var aliases = document.getElementById('identity-aliases');
+  var boundary = document.getElementById('word-map-boundary');
+  if (!summary || !nodes || !edges || !aliases || !boundary) return;
+  summary.textContent = '读取中…';
+  nodes.innerHTML = '<div class="loading">加载中…</div>';
+  edges.innerHTML = '<div class="loading">加载中…</div>';
+  aliases.innerHTML = '<div class="loading">加载中…</div>';
+  boundary.innerHTML = '<div class="loading">加载中…</div>';
+  setWordMapMessage('', '');
+  try {
+    var wordRes = await authFetch(BASE + '/api/word-map?nodes=20&edges=20');
+    if (!wordRes) return;
+    var word = await wordRes.json().catch(function() { return {}; });
+    if (!wordRes.ok) throw new Error(word.error || 'Word Map 读取失败');
+    var identityRes = await authFetch(BASE + '/api/identity-semantics?limit=50');
+    if (!identityRes) return;
+    var identity = await identityRes.json().catch(function() { return {}; });
+    if (!identityRes.ok) throw new Error(identity.error || 'Identity 读取失败');
+    wordMapData = word;
+    identitySemanticData = identity;
+    renderWordMap();
+  } catch (e) {
+    summary.textContent = '读取失败';
+    nodes.innerHTML = '<div class="loading">加载失败: ' + esc(e.message) + '</div>';
+    edges.innerHTML = '';
+    aliases.innerHTML = '';
+    boundary.innerHTML = '';
+    setWordMapMessage('读取失败: ' + e.message, 'error');
+  }
+}
+
+async function rebuildWordMap() {
+  setWordMapMessage('重建 Word Map 中…', '');
+  try {
+    var res = await authFetch(BASE + '/api/word-map/rebuild', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ include_archive: false, nodes: 20, edges: 20 })
+    });
+    if (!res) return;
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(data.error || '重建失败');
+    wordMapData = data;
+    setWordMapMessage('Word Map 已重建：' + formatWordMapStats(data.stats), 'ok');
+    await loadWordMap();
+  } catch (e) {
+    setWordMapMessage('重建失败: ' + e.message, 'error');
+  }
+}
+
+async function rebuildIdentitySemantics() {
+  setWordMapMessage('重建 private alias 中…', '');
+  try {
+    var res = await authFetch(BASE + '/api/identity-semantics/rebuild', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ include_archive: false, limit: 50 })
+    });
+    if (!res) return;
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(data.error || '重建失败');
+    identitySemanticData = data;
+    setWordMapMessage('Private alias 已重建：' + formatIdentityStats(data.stats), 'ok');
+    await loadWordMap();
+  } catch (e) {
+    setWordMapMessage('重建失败: ' + e.message, 'error');
+  }
+}
+
+function formatWordMapStats(stats) {
+  stats = stats || {};
+  return (stats.nodes || 0) + ' nodes · ' + (stats.card_nodes || 0) + ' card links · ' + (stats.edge_evidence || 0) + ' edge evidence';
+}
+
+function formatIdentityStats(stats) {
+  stats = stats || {};
+  return (stats.canonical || 0) + ' canonical · ' + (stats.aliases || 0) + ' aliases · ' + (stats.evidence || 0) + ' evidence';
+}
+
+function renderWordMap() {
+  var word = wordMapData || {};
+  var identity = identitySemanticData || {};
+  var stats = word.stats || {};
+  var identityStats = identity.stats || {};
+  var privateTerms = Array.isArray(word.private_terms_excluded) ? word.private_terms_excluded : [];
+  var summary = document.getElementById('word-map-summary');
+  if (summary) {
+    summary.textContent = [
+      'Word Map ' + formatWordMapStats(stats),
+      'Private Alias ' + formatIdentityStats(identityStats),
+      identity.enabled ? 'private config enabled' : 'private config disabled'
+    ].join(' · ');
+  }
+  renderWordMapNodes(word.nodes || []);
+  renderWordMapEdges(word.edges || []);
+  renderIdentityAliases(identity.aliases || []);
+  renderWordMapBoundary(privateTerms, identity);
+}
+
+function renderWordMapNodes(nodes) {
+  var el = document.getElementById('word-map-nodes');
+  if (!el) return;
+  if (!nodes.length) {
+    el.innerHTML = '<div class="loading">还没有节点；先点重建 Word Map。</div>';
+    return;
+  }
+  el.innerHTML = nodes.map(function(node) {
+    return '<div class="word-map-card">' +
+      '<strong>' + esc(node.term || '') + '</strong>' +
+      '<div>' + esc(node.kind || 'keyword') + ' · buckets ' + esc(node.bucket_count || 0) + ' · weight ' + esc(Number(node.weight || 0).toFixed(2)) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderWordMapEdges(edges) {
+  var el = document.getElementById('word-map-edges');
+  if (!el) return;
+  if (!edges.length) {
+    el.innerHTML = '<div class="loading">还没有共现边。</div>';
+    return;
+  }
+  el.innerHTML = edges.map(function(edge) {
+    return '<div class="word-map-card">' +
+      '<strong>' + esc(edge.term_a || '') + ' ↔ ' + esc(edge.term_b || '') + '</strong>' +
+      '<div>buckets ' + esc(edge.bucket_count || 0) + ' · weight ' + esc(Number(edge.weight || 0).toFixed(2)) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderIdentityAliases(aliases) {
+  var el = document.getElementById('identity-aliases');
+  if (!el) return;
+  if (!aliases.length) {
+    el.innerHTML = '<div class="loading">没有 private alias。未配置私有 canonical 时这里会保持为空。</div>';
+    return;
+  }
+  el.innerHTML = aliases.map(function(item) {
+    var evidence = Array.isArray(item.evidence_bucket_ids) ? item.evidence_bucket_ids.join(', ') : '';
+    return '<div class="word-map-card">' +
+      '<strong>' + esc(item.alias || '') + '</strong>' +
+      '<div>' + esc(item.canonical || '') + '</div>' +
+      '<div>' + esc(item.scope || '') + ' · confidence ' + esc(Number(item.confidence || 0).toFixed(2)) + '</div>' +
+      '<div>evidence: ' + esc(evidence || '—') + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function renderWordMapBoundary(privateTerms, identity) {
+  var el = document.getElementById('word-map-boundary');
+  if (!el) return;
+  var identityEnabled = identity && identity.enabled;
+  var privateText = privateTerms.length ? privateTerms.join(', ') : '无';
+  el.innerHTML =
+    '<div class="word-map-card"><strong>Generic Word Map</strong><div>从 subject / keywords / tags / TF-IDF 派生，只存词与 bucket 的共现证据。</div></div>' +
+    '<div class="word-map-card"><strong>Private Scope</strong><div>私有 alias 不进入通用词图；当前排除词：' + esc(privateText) + '</div></div>' +
+    '<div class="word-map-card"><strong>Gateway</strong><div>当前页面不会改变 Gateway 注入；这里只是诊断和手动索引。</div></div>' +
+    '<div class="word-map-card"><strong>Identity</strong><div>' + esc(identityEnabled ? 'private canonical 已启用。' : '未配置私有 canonical，alias 索引保持关闭。') + '</div></div>';
 }
 
 function updateStats() {
