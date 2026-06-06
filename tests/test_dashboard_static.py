@@ -155,6 +155,17 @@ def test_dashboard_hides_confirm_button_for_active_profile_facts():
     assert "runProfileFactAction(\\'' + jsString(id) + '\\', \\'confirm\\')" in html
 
 
+def test_dashboard_keeps_proposal_confirm_success_messages():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    profile_block = html.split("async function confirmProfileFactProposal", 1)[1].split("function setAnchorProposalMessage", 1)[0]
+    anchor_block = html.split("async function confirmAnchorProposal", 1)[1].split("function renderProfileFacts", 1)[0]
+
+    assert "var successMessage = '已写入画像事实 ' + (data.id || '');" in profile_block
+    assert profile_block.index("renderProfileFactProposals({ proposals: profileFactProposals, rejected: [] });") < profile_block.index("setProfileProposalMessage(successMessage, 'ok');")
+    assert "var successMessage = data.status === 'already_anchor' ? '已经是 Anchor。' : '已标为 Anchor ' + (data.id || '');" in anchor_block
+    assert anchor_block.index("renderAnchorProposals({ proposals: anchorProposals, rejected: [] });") < anchor_block.index("setAnchorProposalMessage(successMessage, 'ok');")
+
+
 def test_dashboard_exposes_word_map_page():
     html = Path("dashboard.html").read_text(encoding="utf-8")
 

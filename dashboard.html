@@ -3013,9 +3013,10 @@ async function confirmProfileFactProposal(index) {
     if (!res) return;
     var data = await res.json().catch(function() { return {}; });
     if (!res.ok) throw new Error(data.error || '写入失败');
-    setProfileProposalMessage('已写入画像事实 ' + (data.id || ''), 'ok');
+    var successMessage = '已写入画像事实 ' + (data.id || '');
     profileFactProposals.splice(index, 1);
     renderProfileFactProposals({ proposals: profileFactProposals, rejected: [] });
+    setProfileProposalMessage(successMessage, 'ok');
     await loadProfileFacts();
     await loadBuckets();
   } catch (e) {
@@ -3105,9 +3106,10 @@ async function confirmAnchorProposal(index) {
     if (!res) return;
     var data = await res.json().catch(function() { return {}; });
     if (!res.ok) throw new Error(data.error || '写入失败');
-    setAnchorProposalMessage(data.status === 'already_anchor' ? '已经是 Anchor。' : '已标为 Anchor ' + (data.id || ''), 'ok');
+    var successMessage = data.status === 'already_anchor' ? '已经是 Anchor。' : '已标为 Anchor ' + (data.id || '');
     anchorProposals.splice(index, 1);
     renderAnchorProposals({ proposals: anchorProposals, rejected: [] });
+    setAnchorProposalMessage(successMessage, 'ok');
     await loadBuckets();
   } catch (e) {
     setAnchorProposalMessage('写入失败: ' + e.message, 'error');
