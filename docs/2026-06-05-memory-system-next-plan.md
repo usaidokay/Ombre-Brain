@@ -42,6 +42,30 @@ The current slice is complete on `feature/memory-diffusion-p0`.
   - `breath(query="激动哭")` hits `2c4b82ee93ba`
   - `breath(query="记忆改版 模型更新")` hits `65023203392f` and returns the new `### assistant_reflection`
 
+## 2026-06-07 Status Update
+
+New tool-written memories now keep the target structure at write time.
+
+- Runtime fix: commit `73660a9` (`Wrap unheaded memory writes as moments`) on `feature/memory-diffusion-p0`.
+- `_normalize_memory_sections_for_write()` now calls the migration planner with `body_only_moment="wrap"` for server write paths.
+- This affects `hold`, `grow`, digest items, merges, and `/api/memories` writes.
+- If a new write starts with unheaded body text and has no existing/extracted `### moment`, the leading body is wrapped as `### moment`.
+- Existing old-bucket migration stays conservative: the CLI/default dry-run still uses `body_only_moment="skip"`, so pure old body-only buckets are not suddenly pulled into migration plans.
+- Guardrail cases are covered:
+  - unheaded body + `### reflection` + chord-only `### affect_anchor` becomes `### moment` + `### reflection` + `### affect_anchor`
+  - if `### affect_anchor` already yields an event moment, the leading body is preserved rather than duplicated
+  - if an explicit `### moment` already exists, the leading body is left alone
+- Validation before deploy: `31 passed` across the affect-anchor migration suite plus the focused memory API write-normalization tests; `py_compile` passed for `server.py` and `scripts/migrate_affect_anchor_sections.py`.
+- VPS deploy: `/opt/Ombre-Brain` on `8.136.154.242` fast-forwarded to `73660a9`, rebuilt `ombre-brain` and `ombre-gateway`, and both health checks returned `ok`.
+- Live smoke test inside the `ombre-brain` container confirmed the normalized first line is `### moment`.
+
+Prompt/docs guidance was also aligned after the runtime fix:
+
+- `CLAUDE_PROMPT.md` commit on p0: `c4717c2` (`Update Claude prompt grow guidance`), pushed to `origin/feature/memory-diffusion-p0` and `shadow/feature/memory-diffusion-p0`.
+- The same prompt change was cherry-picked to `main` as `a969a17` and pushed to `origin/main`.
+- The prompt now allows `grow` at day end or when the user sends a long diary/summary, but only after extracting durable events, preferences, commitments, or project state. Whole diaries and raw emotional process should not be sent to `grow` unchanged.
+- `shadow/main` was not force-updated because it is not a fast-forward mirror of `origin/main`.
+
 ## Memory Boundaries
 
 ### `pinned` / `protected`

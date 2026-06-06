@@ -792,7 +792,7 @@ Haven 的理解、确认、喜欢原因、以后怎么回应。
 为什么这条是 favorite。
 ```
 
-旧格式正文没有这些标题时，会整体索引为 `body`；如果正文已有 `### moment / ### assistant_reflection / ### affect_anchor / ### 喜欢它的原因`，会单独拆成对应 moment。`assistant_reflection` 会作为 reflection/context moment，不应直接当作用户画像事实；`affect_anchor` 只承载和弦、温度、诗性标记，不承载事实。`metadata.comments` 会索引为 `comment`，保留年轮作者、kind、valence/arousal 等元信息。`haven_favorite / flavor_* / anchor / pinned` 等仍作为 bucket 级温度标记写进 moment metadata，不会降级成普通文本。
+旧格式正文没有这些标题时，会整体索引为 `body`；如果正文已有 `### moment / ### assistant_reflection / ### affect_anchor / ### 喜欢它的原因`，会单独拆成对应 moment。新写入路径会先做轻量标准化：无标题正文后面接 `### reflection` / `### affect_anchor`、且还没有 `### moment` 时，开头正文会包成 `### moment`；旧桶迁移 dry-run 仍默认跳过纯正文老桶。`assistant_reflection` 会作为 reflection/context moment，不应直接当作用户画像事实；`affect_anchor` 只承载和弦、温度、诗性标记，不承载事实。`metadata.comments` 会索引为 `comment`，保留年轮作者、kind、valence/arousal 等元信息。`haven_favorite / flavor_* / anchor / pinned` 等仍作为 bucket 级温度标记写进 moment metadata，不会降级成普通文本。
 
 索引同时生成 deterministic moment edges：
 
@@ -911,7 +911,7 @@ content: str
 失败：返回 “长内容摘记失败: ...” 或 “内容为空或整理失败。”。
 ```
 
-用途：只给已经筛过、包含多个长期记忆点的片段；整篇日记不要直接 grow。
+用途：只给已经筛过、包含多个长期记忆点的片段。一天结束或用户发来长日记/总结时，可以把值得长期记住的事件、偏好、承诺或项目状态摘出来交给 `grow`；整篇日记、一天流水、完整情绪过程不要原样 `grow`。
 
 #### `trace(...) -> str`
 
