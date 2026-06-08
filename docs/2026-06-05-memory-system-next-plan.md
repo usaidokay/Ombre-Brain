@@ -444,10 +444,13 @@ Rules:
 The current Gateway already injects short memory summaries with `bucket_id`.
 This makes a light two-step recall possible without formal tool calling.
 
-Status on 2026-06-05: implemented as an optional Gateway retry for non-streaming
-OpenAI-compatible and Anthropic-compatible requests. It is disabled by default.
-Streaming replies do not use this path because the first tokens may already have
-been sent to the client.
+Status on 2026-06-08: implemented as an optional Gateway retry for non-streaming
+OpenAI-compatible and Anthropic-compatible requests. Streaming replies do not
+use this path because the first tokens may already have been sent to the client.
+The steadier production path is Gateway-side Targeted Memory Detail: when the
+user asks to expand a shown memory, quote the original wording, ask why, or ask
+what was confirmed, Gateway can add the detail block before the upstream model
+answers.
 
 Shape:
 
@@ -462,6 +465,14 @@ Shape:
 4. Gateway only accepts ids that were already injected in the current turn.
 5. Gateway fetches the full bucket or a longer bucket detail block and asks the upstream model again with that temporary context.
 6. The final user-visible reply must not contain the internal request.
+
+How to tell the paths apart in debug:
+
+- `recalled_bucket_ids`, `diffused_bucket_ids`, and `injected_bucket_ids` mean the first-pass memory context was injected.
+- `targeted_memory_detail_debug.triggered=true` means Gateway prefilled detail before the upstream answer.
+- `memory_detail_recall_debug.triggered=true` plus `retried=true` means the model asked for `[memory_detail ids="..."]` and Gateway made a second upstream call in the same user turn.
+- `detail_tokens` is the approximate token count of the added detail block.
+- Recent real upstream `usage` is only a debugging aid and is kept in a small rolling table, queryable at `/api/debug/upstream-usage?session_id=...`.
 
 Why this is preferable to a visible `[recall]` suffix on every user message:
 
@@ -479,6 +490,7 @@ Guardrails:
 - Do not write memory.
 - Do not store the internal request in conversation history.
 - Do not bypass existing recall gates; this only expands details for memories already admitted this turn.
+- If the retry response repeats `[memory_detail ids="..."]`, strip it before returning the final response.
 
 ### 11. Add Daily Portrait Maintainer and handoff breath
 

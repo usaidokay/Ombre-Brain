@@ -61,7 +61,7 @@
 | Memory Edge / Node | 自动生成显式记忆关系边；`memory_nodes.sqlite` 为 bucket 生成 salience 与 facets，Gateway 和 `breath()` 可沿边做多跳联想浮现 | `memory_edges.py`、`memory_nodes.py`、`memory_diffusion.py`、`reflection_engine.py` |
 | Memory Moment | 将 Markdown bucket 解析成 `body / moment / original / context / feeling / followup / affect_anchor / favorite_reason / comment` 等片段，写入 `memory_moments.sqlite`，并生成同桶前后文边、年轮/情绪温度边；`breath(query=...)` 以 moment 为单位召回和扩散 | `memory_moments.py`、`server.py` |
 | Word Map Lite | 从 bucket/moment 派生关键词和共现边，用于 Dashboard 诊断和未来召回提示；默认不注入 Gateway | `word_map.py`、`scripts/build_word_map.py` |
-| Query Planner / Detail Recall | Gateway 可把长句或低置信问题拆成少量短查询；可选的内部 `memory_detail` 二次读取默认关闭，只允许已召回 bucket id | `gateway.py`、`server.py` |
+| Query Planner / Detail Recall | Gateway 可把长句或低置信问题拆成少量短查询；Targeted Memory Detail 会在追问“细节/原话/为什么/由此确认”等场景服务端预取；可选的内部 `memory_detail` retry 只允许已注入 bucket id | `gateway.py`、`server.py` |
 | Profile Fact / 事实画像 | `profile_fact` 是带证据 bucket/moment 的用户画像事实；自动流程只提候选，确认后才写事实 bucket | `server.py`、`portrait_engine.py`、`dashboard.html` |
 | 长期锚点 Anchor | 介于普通浮现和 pinned/permanent 之间的长期记忆位。`anchor=true` 的普通 bucket 不混入普通权重池，`breath()` 会用独立槽位少量带出，适合经过时间验证、未来仍需要被想起的关系锚点或项目锚点 | `server.py`、`dashboard.html` |
 | Relationship Weather | 日印象保存为 `type=feel`，默认不单独注入，可在面板观察或按配置开启注入 | `reflection_engine.py` |
@@ -114,7 +114,7 @@ bucket 是 Markdown 文件，正文保存记忆内容，frontmatter 保存元数
 
 ```text
 embeddings.db       # 向量语义检索
-gateway_state.db    # 每个 session 的轮次、最近注入、冷却、轻量 conversation_turns
+gateway_state.db    # 每个 session 的轮次、最近注入、冷却、轻量 conversation_turns、近期 upstream usage debug
 persona_state.db    # Persona 全局状态、关系状态、会话心情
 portrait_state.json # 每日维护的 Persona/User/Relationship/Recent portrait
 memory_edges.jsonl  # 显式记忆关系边
@@ -251,6 +251,7 @@ cp config.example.yaml /srv/ombre-brain/config.yaml
 - `gateway.portrait_memory_*`：控制 Gateway 是否注入只读画像事实缓存，默认开启，只读取 `profile_fact` 和选中的 anchor，不读 pinned/protected。
 - `gateway.query_planner_*`：长句或低置信问题可额外拆成 1-3 个短查询；只是补候选，不直接注入。
 - `gateway.memory_detail_recall_*`：可选内部二次取细节，默认关闭；只允许已召回过的 bucket id。
+- `GET /api/debug/upstream-usage?session_id=...`：排查用近期上游 token usage，只保留最近少量记录；真实二次取回看 `/api/debug/injections` 里的 `memory_detail_recall_debug.triggered/retried/detail_tokens`，普通 `recalled/diffused/injected` 不等于二次取回。
 - `recall.query_resurface_enabled`：是否允许有 query 的 `breath()` 随机追加久未碰过的旧记忆，默认 `false`。
 - `memory_diffusion.*`：控制图扩散、链式扩散、hop 衰减和关系权重；默认启用普通短扩散，可靠链式扩散默认关闭。
 - `word_map.*`：派生词图诊断，默认关闭，不自动注入 Gateway。

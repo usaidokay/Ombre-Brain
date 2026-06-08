@@ -918,7 +918,7 @@ class GatewayService:
             )
             if memory_detail_debug and isinstance(injection_debug, dict):
                 injection_debug["memory_detail_recall_debug"] = memory_detail_debug
-            self._log_cache_usage_from_response(
+            upstream_usage = self._log_cache_usage_from_response(
                 session_id,
                 forward_payload["model"],
                 upstream_response,
@@ -935,6 +935,7 @@ class GatewayService:
                 model=forward_payload["model"],
                 client=client_label,
                 route="/v1/chat/completions",
+                upstream_usage=upstream_usage,
             )
             await self._update_persona_after_assistant_message(
                 session_id,
@@ -1009,7 +1010,7 @@ class GatewayService:
             )
             if memory_detail_debug and isinstance(injection_debug, dict):
                 injection_debug["memory_detail_recall_debug"] = memory_detail_debug
-            self._log_cache_usage_from_response(
+            upstream_usage = self._log_cache_usage_from_response(
                 session_id,
                 forward_payload["model"],
                 upstream_response,
@@ -1026,6 +1027,7 @@ class GatewayService:
                 model=forward_payload["model"],
                 client=client_label,
                 route="/v1/messages",
+                upstream_usage=upstream_usage,
             )
             await self._update_persona_after_assistant_message(
                 session_id,
@@ -1078,6 +1080,25 @@ class GatewayService:
                     session_id=session_id,
                     limit=limit,
                     include_context=include_context,
+                )
+            }
+        )
+
+    async def handle_upstream_usage_debug(self, request: Request) -> JSONResponse:
+        auth_result = self._authorize(request.headers.get("Authorization", ""))
+        if auth_result is not None:
+            return auth_result
+
+        try:
+            limit = int(request.query_params.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        session_id = str(request.query_params.get("session_id", "") or "").strip()
+        return JSONResponse(
+            {
+                "items": self.state_store.list_upstream_usage(
+                    session_id=session_id,
+                    limit=limit,
                 )
             }
         )
@@ -1741,6 +1762,7 @@ class GatewayService:
         model: str = "",
         client: str = "",
         route: str = "",
+        upstream_usage: dict[str, Any] | None = None,
     ) -> None:
         if recalled_ids is None:
             logger.info(
@@ -1778,6 +1800,22 @@ class GatewayService:
             client=client,
             route=route,
         )
+        if isinstance(upstream_usage, dict) and upstream_usage:
+            try:
+                self.state_store.record_upstream_usage(
+                    session_id=session_id,
+                    round_id=round_id,
+                    model=model,
+                    route=route,
+                    usage=upstream_usage,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Gateway upstream usage record failed | session=%s round=%s error=%s",
+                    session_id,
+                    round_id,
+                    exc,
+                )
         for bucket_id in recalled_ids:
             await self.bucket_mgr.touch(bucket_id)
         logger.info(
@@ -1902,10 +1940,24 @@ class GatewayService:
         debug["retry_status_code"] = retry_response.status_code
         if 200 <= retry_response.status_code < 300:
             debug["retried"] = True
-            return retry_response, debug
+            return self._strip_memory_detail_marker_from_response(retry_response), debug
 
         debug["skip_reason"] = "retry_failed"
         return stripped_response, debug
+
+    def _strip_memory_detail_marker_from_response(self, upstream_response: httpx.Response) -> httpx.Response:
+        try:
+            body = upstream_response.json()
+        except ValueError:
+            return upstream_response
+        assistant_message = self._extract_assistant_message_from_response_body(body)
+        if not isinstance(assistant_message, dict):
+            return upstream_response
+        text = self._coerce_message_text(assistant_message.get("content"))
+        _, stripped_text = self._parse_memory_detail_request(text)
+        if stripped_text == text:
+            return upstream_response
+        return self._response_with_assistant_content(upstream_response, body, stripped_text)
 
     def _memory_detail_recall_debug_base(self, allowed_ids: list[str] | None = None) -> dict[str, Any]:
         return {
@@ -2592,7 +2644,7 @@ class GatewayService:
         client: str = "",
         injection_debug: dict[str, Any] | None = None,
     ) -> None:
-        self._log_cache_usage_from_stream_state(
+        upstream_usage = self._log_cache_usage_from_stream_state(
             session_id,
             model,
             stream_state,
@@ -2609,6 +2661,7 @@ class GatewayService:
             model=model,
             client=client,
             route=route,
+            upstream_usage=upstream_usage,
         )
         self._schedule_persona_post_reply_update(
             session_id,
@@ -2671,14 +2724,16 @@ class GatewayService:
         model: str,
         upstream_response: httpx.Response,
         route: str,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         try:
             body = upstream_response.json()
         except ValueError:
-            return
+            return None
         usage = body.get("usage") if isinstance(body, dict) else None
-        if isinstance(usage, dict):
+        if isinstance(usage, dict) and usage:
             self._log_cache_usage(session_id, model, route, usage)
+            return usage
+        return None
 
     def _log_cache_usage_from_stream_state(
         self,
@@ -2686,10 +2741,12 @@ class GatewayService:
         model: str,
         stream_state: dict[str, Any],
         route: str,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         usage = stream_state.get("usage")
-        if isinstance(usage, dict):
+        if isinstance(usage, dict) and usage:
             self._log_cache_usage(session_id, model, route, usage)
+            return usage
+        return None
 
     def _log_cache_usage(self, session_id: str, model: str, route: str, usage: dict[str, Any]) -> None:
         hit = usage.get("prompt_cache_hit_tokens")
@@ -7875,12 +7932,16 @@ def create_gateway_app(
     async def injection_debug(request: Request) -> Response:
         return await request.app.state.gateway_service.handle_injection_debug(request)
 
+    async def upstream_usage_debug(request: Request) -> Response:
+        return await request.app.state.gateway_service.handle_upstream_usage_debug(request)
+
     app = Starlette(
         debug=False,
         routes=[
             Route("/health", health, methods=["GET"]),
             Route("/api/config", config_route, methods=["GET", "POST"]),
             Route("/api/debug/injections", injection_debug, methods=["GET"]),
+            Route("/api/debug/upstream-usage", upstream_usage_debug, methods=["GET"]),
             Route("/v1/models", models, methods=["GET"]),
             Route("/v1/chat/completions", chat_completions, methods=["POST"]),
             Route("/v1/messages", anthropic_messages, methods=["POST"]),

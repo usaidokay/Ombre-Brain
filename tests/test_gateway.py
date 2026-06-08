@@ -385,6 +385,45 @@ def test_gateway_state_store_cooldown_curve(tmp_path):
     assert turns[0]["user_text"] == "暗号是星河折纸"
     assert turns[0]["assistant_text"] == "我记住了。"
 
+    store.record_upstream_usage(
+        session_id="sess-a",
+        round_id=1,
+        model="dummy-model",
+        route="/v1/chat/completions",
+        usage={
+            "prompt_tokens": 101,
+            "completion_tokens": 12,
+            "prompt_cache_hit_tokens": 30,
+            "prompt_tokens_details": {"cached_tokens": 30},
+        },
+        max_entries=2,
+    )
+    store.record_upstream_usage(
+        session_id="sess-b",
+        round_id=1,
+        model="dummy-model",
+        route="/v1/chat/completions",
+        usage={"input_tokens": 202, "output_tokens": 24},
+        max_entries=2,
+    )
+    store.record_upstream_usage(
+        session_id="sess-a",
+        round_id=2,
+        model="dummy-model",
+        route="/v1/messages",
+        usage={"cache_read_input_tokens": 9, "cache_creation_input_tokens": 4},
+        max_entries=2,
+    )
+    usage_rows = store.list_upstream_usage(limit=5)
+    assert len(usage_rows) == 2
+    assert usage_rows[0]["session_id"] == "sess-a"
+    assert usage_rows[0]["round_id"] == 2
+    assert usage_rows[0]["cache_read_input_tokens"] == 9
+    assert usage_rows[1]["session_id"] == "sess-b"
+    sess_a_usage = store.list_upstream_usage(session_id="sess-a", limit=5)
+    assert len(sess_a_usage) == 1
+    assert sess_a_usage[0]["route"] == "/v1/messages"
+
 
 def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_config, bucket_mgr):
     cfg = _gateway_config(
@@ -1747,6 +1786,63 @@ def test_gateway_logs_provider_cache_usage(monkeypatch, test_config, bucket_mgr,
     assert "cache_read_input_tokens=1800" in caplog.text
     assert "cache_creation_input_tokens=200" in caplog.text
     assert "completion_tokens=7" in caplog.text
+
+
+def test_gateway_records_recent_upstream_usage(monkeypatch, test_config, bucket_mgr):
+    def responder(_body, _request, _captured):
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-usage",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 321,
+                    "completion_tokens": 45,
+                    "prompt_cache_hit_tokens": 64,
+                    "prompt_cache_miss_tokens": 257,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                },
+            },
+        )
+
+    app, _, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, current_inner_state_interval_rounds=0),
+        bucket_mgr,
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-usage-debug",
+            },
+            json={"messages": [{"role": "user", "content": "你好"}]},
+        )
+        usage_response = client.get(
+            "/api/debug/upstream-usage?session_id=sess-usage-debug",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert usage_response.status_code == 200
+    items = usage_response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["session_id"] == "sess-usage-debug"
+    assert items[0]["round_id"] == 1
+    assert items[0]["prompt_tokens"] == 321
+    assert items[0]["completion_tokens"] == 45
+    assert items[0]["cached_tokens"] == 64
+    assert items[0]["usage"]["prompt_cache_miss_tokens"] == 257
 
 
 def test_gateway_preserves_tool_call_fields(monkeypatch, test_config, bucket_mgr):
@@ -5102,6 +5198,91 @@ def test_gateway_memory_detail_recall_retries_with_allowed_bucket_id(
     assert detail_debug["triggered"] is True
     assert detail_debug["retried"] is True
     assert detail_debug["accepted_ids"] == [target_id]
+
+
+def test_gateway_memory_detail_retry_strips_repeated_marker(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="耳机坏掉以后，小雨最后决定先换备用耳机。SECRET-DETAIL: 备用耳机在抽屉。",
+        name="耳机细节",
+        hours_ago=24,
+        importance=9,
+        domain=["生活"],
+    )
+
+    def responder(_body, _request, captured):
+        if len(captured) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-memory-detail-repeat-1",
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": f'[memory_detail ids="{target_id}"]\n我先看细节。',
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-memory-detail-repeat-2",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": f'[memory_detail ids="{target_id}"]\n二次回答也复读了。',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            memory_detail_recall_enabled=True,
+            memory_detail_recall_budget=1200,
+            recalled_memory_budget=120,
+            related_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-memory-detail-repeat",
+            },
+            json={"messages": [{"role": "user", "content": "耳机坏掉后来怎么样"}]},
+        )
+
+    assert response.status_code == 200
+    assert len(captured) == 2
+    final_content = response.json()["choices"][0]["message"]["content"]
+    assert final_content == "二次回答也复读了。"
+    assert "[memory_detail" not in final_content
 
 
 def test_gateway_streaming_does_not_inject_memory_detail_request(
