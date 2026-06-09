@@ -1340,7 +1340,7 @@ def _normalize_memory_sections_for_write(content: str) -> str:
         return ""
     migration = plan_bucket_migration(
         {"id": "write_preview", "content": raw, "metadata": {"name": "write_preview"}},
-        body_only_moment="wrap",
+        body_only_moment="first_sentence",
     )
     if migration:
         return migration.new_content.strip()

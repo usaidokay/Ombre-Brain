@@ -1437,7 +1437,6 @@ class ReflectionEngine:
             line = f"{line} · {' · '.join(extras)}"
         block = (
             f"{AFFECT_ANCHOR_HEADER}\n\n"
-            f"> {normalized['scene']}\n"
             f"> {line}"
         )
         base = str(content or "").rstrip()
