@@ -409,6 +409,105 @@ def test_portrait_mid_term_rewrite_requires_staging_evidence(tmp_path, test_conf
     assert normalized["rewrite_mid_term"][0]["evidence"] == [{"bucket_id": "fresh-bucket"}]
 
 
+def test_portrait_rewrite_stable_updates_scope_paragraph_with_source_dates(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["portrait"]["user"]["staging_pool"].append(
+        {
+            "text": "小雨长期关心时间精度。",
+            "evidence": [{"bucket_id": "old-bucket"}],
+            "source_dates": ["2026-06-08"],
+        }
+    )
+    previous = engine._portrait_snapshot(state)
+    materials = {
+        "buckets": [{"bucket_id": "fresh-bucket", "source_date": "2026-06-10"}],
+        "persona_events": [],
+        "previous_portrait": previous,
+    }
+
+    normalized, rejected = engine._normalize_patch(
+        {
+            "rewrite_stable": [
+                {
+                    "scope": "user",
+                    "text": "这一条会被同 scope 后一条覆盖。",
+                    "evidence": [{"bucket_id": "old-bucket"}],
+                    "confidence": 0.7,
+                },
+                {
+                    "scope": "user",
+                    "text": "小雨稳定地关心记忆系统的时间精度和证据边界。",
+                    "evidence": [{"bucket_id": "old-bucket"}, {"bucket_id": "fresh-bucket"}],
+                    "confidence": 0.86,
+                },
+            ]
+        },
+        materials,
+    )
+    engine._annotate_patch_source_dates(normalized, materials)
+    next_state = engine._apply_patch(state, normalized, "2026-06-10")
+
+    assert rejected == []
+    assert len(normalized["rewrite_stable"]) == 1
+    assert next_state["portrait"]["user"]["stable"] == "小雨稳定地关心记忆系统的时间精度和证据边界。"
+    assert next_state["portrait"]["user"]["stable_evidence"] == [
+        {"bucket_id": "old-bucket"},
+        {"bucket_id": "fresh-bucket"},
+    ]
+    assert next_state["portrait"]["user"]["stable_source_dates"] == ["2026-06-10", "2026-06-08"]
+
+
+def test_portrait_delete_state_item_removes_rows_and_clears_paragraph(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["portrait"]["relationship"]["stable"] = "这条 stable 要被删除。"
+    state["portrait"]["relationship"]["stable_evidence"] = [{"bucket_id": "stable-bucket"}]
+    state["portrait"]["relationship"]["staging_pool"].append(
+        {"text": "这条 staging 要被删除。", "evidence": [{"bucket_id": "stage-bucket"}]}
+    )
+    engine.save_state(state)
+
+    deleted_row = engine.delete_state_item(
+        area="portrait",
+        scope="relationship",
+        layer="staging_pool",
+        index=0,
+        text="这条 staging 要被删除。",
+    )
+    cleared_stable = engine.delete_state_item(
+        area="portrait",
+        scope="relationship",
+        layer="stable",
+        text="这条 stable 要被删除。",
+    )
+    loaded = engine.load_state()
+
+    assert deleted_row["status"] == "deleted"
+    assert cleared_stable["status"] == "deleted"
+    assert loaded["portrait"]["relationship"]["staging_pool"] == []
+    assert loaded["portrait"]["relationship"]["stable"] == ""
+    assert loaded["portrait"]["relationship"]["stable_evidence"] == []
+
+
 def test_portrait_recent_activity_is_evidence_bound_user_context(tmp_path, test_config):
     state_path = tmp_path / "state" / "portrait_state.json"
     engine = DailyPortraitMaintainer(

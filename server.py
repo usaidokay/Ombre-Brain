@@ -7339,6 +7339,44 @@ async def api_portrait_maintain(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/portrait-state/items", methods=["DELETE"])
+async def api_portrait_state_item_delete(request):
+    """Delete one portrait state row or clear one maintained portrait paragraph."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+    if body.get("confirm") != "DELETE":
+        return JSONResponse({"error": "confirmation required"}, status_code=400)
+
+    raw_index = body.get("index")
+    try:
+        index = int(raw_index) if raw_index is not None and str(raw_index) != "" else None
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "index must be an integer"}, status_code=400)
+    result = portrait_engine.delete_state_item(
+        area=str(body.get("area") or ""),
+        scope=str(body.get("scope") or ""),
+        layer=str(body.get("layer") or ""),
+        index=index,
+        text=str(body.get("text") or ""),
+    )
+    status = str(result.get("status") or "")
+    if status == "deleted":
+        return JSONResponse(result)
+    if status == "not_found":
+        return JSONResponse(result, status_code=404)
+    if status == "conflict":
+        return JSONResponse(result, status_code=409)
+    return JSONResponse(result, status_code=400)
+
+
 @mcp.custom_route("/api/profile-facts", methods=["GET"])
 async def api_profile_facts(request):
     """List evidence-bound profile facts for dashboard review."""
@@ -7457,6 +7495,43 @@ async def api_profile_fact_update(request):
         "id": bucket_id,
         "fact": await _profile_fact_payload(updated_bucket),
     })
+
+
+@mcp.custom_route("/api/profile-facts/{bucket_id}", methods=["DELETE"])
+async def api_profile_fact_delete(request):
+    """Hard-delete one profile fact bucket and clean its indexes."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+
+    bucket_id = request.path_params["bucket_id"]
+    if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
+        return JSONResponse({"error": "invalid bucket_id"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+    if body.get("confirm") != "DELETE":
+        return JSONResponse({"error": "confirmation required"}, status_code=400)
+
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not _is_profile_fact_bucket(bucket):
+        return JSONResponse({"error": "not a profile_fact bucket"}, status_code=400)
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    if meta.get("protected") or meta.get("pinned"):
+        return JSONResponse({"error": "protected profile_fact cannot be deleted"}, status_code=403)
+
+    result = await _delete_bucket_and_indexes(bucket_id)
+    if result.get("status") != "deleted":
+        return JSONResponse(result, status_code=500)
+    return JSONResponse(result)
 
 
 @mcp.custom_route("/api/profile-fact-proposals", methods=["POST"])

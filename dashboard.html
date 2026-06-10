@@ -1774,6 +1774,23 @@
   .portrait-row-meta {
     margin-top: 6px;
   }
+  .portrait-row-meta button {
+    min-height: 24px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  .portrait-row-meta button.danger { color: var(--negative); }
+  .portrait-row-meta button:hover {
+    border-color: var(--border-strong);
+    color: var(--accent);
+  }
+  .portrait-row-meta button.danger:hover { color: var(--negative); }
   .portrait-evidence {
     margin-top: 5px;
     color: var(--text-light);
@@ -3320,19 +3337,35 @@ function renderPortraitScope(scope, scopeState) {
   var stableRows = scopeState.stable ? [{
     text: scopeState.stable,
     evidence: scopeState.stable_evidence || [],
+    source_dates: scopeState.stable_source_dates || [],
+    source_date: scopeState.stable_source_date || '',
     updated_at: scopeState.stable_updated_at || ''
   }] : [];
   var midRows = scopeState.mid_term ? [{
     text: scopeState.mid_term,
     evidence: scopeState.mid_term_evidence || [],
+    source_dates: scopeState.mid_term_source_dates || [],
+    source_date: scopeState.mid_term_source_date || '',
     updated_at: scopeState.mid_term_updated_at || ''
   }] : [];
+  stableRows = stableRows.map(function(row) {
+    return withPortraitDelete(row, { area: 'portrait', scope: scope, layer: 'stable', text: row.text || '' });
+  });
+  midRows = midRows.map(function(row) {
+    return withPortraitDelete(row, { area: 'portrait', scope: scope, layer: 'mid_term', text: row.text || '' });
+  });
+  var stagingRows = portraitRows(scopeState.staging_pool).slice(0, 6).map(function(row, index) {
+    return withPortraitDelete(row, { area: 'portrait', scope: scope, layer: 'staging_pool', index: index, text: row && row.text || '' });
+  });
+  var recentRows = portraitRows(scopeState.recent_buffer).slice(0, 6).map(function(row, index) {
+    return withPortraitDelete(row, { area: 'portrait', scope: scope, layer: 'recent_buffer', index: index, text: row && row.text || '' });
+  });
   return '<section class="portrait-scope">' +
     '<h3>' + esc(labels[scope] || scope) + '</h3>' +
     renderPortraitLayer('stable', stableRows, '还没有 stable portrait。') +
     renderPortraitLayer('mid term', midRows, '还没有 mid-term portrait。') +
-    renderPortraitLayer('staging pool', portraitRows(scopeState.staging_pool).slice(0, 6), 'staging pool 为空。') +
-    renderPortraitLayer('recent buffer', portraitRows(scopeState.recent_buffer).slice(0, 6), 'recent buffer 为空。') +
+    renderPortraitLayer('staging pool', stagingRows, 'staging pool 为空。') +
+    renderPortraitLayer('recent buffer', recentRows, 'recent buffer 为空。') +
   '</section>';
 }
 
@@ -3350,11 +3383,33 @@ function renderPortraitRows(rows, emptyText) {
 }
 
 function renderPortraitCandidates(title, candidates) {
-  var rows = portraitRows(candidates).slice(-8).reverse();
+  var area = title.indexOf('Stable') === 0 ? 'stable_candidates' : 'profile_fact_candidates';
+  var rows = portraitRows(candidates).map(function(row, index) {
+    return withPortraitDelete(row, { area: area, index: index, text: row && row.text || '' });
+  }).slice(-8).reverse();
   return '<section class="portrait-candidates">' +
     '<h3>' + esc(title) + '</h3>' +
     renderPortraitRows(rows, '没有候选。') +
   '</section>';
+}
+
+function withPortraitDelete(row, spec) {
+  row = Object.assign({}, row || {});
+  row._delete = spec;
+  return row;
+}
+
+function portraitRowDateLabel(item) {
+  var dates = Array.isArray(item.source_dates) ? item.source_dates.filter(Boolean) : [];
+  if (item.source_date) dates.unshift(item.source_date);
+  var seen = [];
+  dates.forEach(function(date) {
+    date = String(date || '').trim();
+    if (date && seen.indexOf(date) === -1) seen.push(date);
+  });
+  if (seen.length) return 'source ' + seen.slice(0, 3).join(', ');
+  if (item.last_seen_date) return 'seen ' + item.last_seen_date;
+  return item.updated_at || item.created_at || '';
 }
 
 function renderPortraitRow(item) {
@@ -3368,16 +3423,44 @@ function renderPortraitRow(item) {
   if (item.object) meta.push(item.object);
   if (item.confidence != null) meta.push('confidence ' + Number(item.confidence || 0).toFixed(2));
   if (item.count) meta.push('seen ' + item.count);
-  if (item.updated_at || item.last_seen_date || item.created_at) {
-    meta.push(item.updated_at || item.last_seen_date || item.created_at);
-  }
+  var dateLabel = portraitRowDateLabel(item);
+  if (dateLabel) meta.push(dateLabel);
+  var deleteButton = item._delete
+    ? '<button type="button" class="danger" onclick="deletePortraitStateItem(\'' + jsString(JSON.stringify(item._delete)) + '\')">删除</button>'
+    : '';
   return '<div class="portrait-row">' +
     '<div class="portrait-row-text">' + esc(text) + '</div>' +
     (meta.length ? '<div class="portrait-row-meta">' + meta.map(function(part) {
       return '<span class="profile-chip">' + esc(part) + '</span>';
-    }).join('') + '</div>' : '') +
+    }).join('') + deleteButton + '</div>' : (deleteButton ? '<div class="portrait-row-meta">' + deleteButton + '</div>' : '')) +
     renderPortraitEvidence(item.evidence) +
   '</div>';
+}
+
+async function deletePortraitStateItem(specJson) {
+  var spec;
+  try {
+    spec = JSON.parse(specJson || '{}');
+  } catch (e) {
+    alert('删除参数错误。');
+    return;
+  }
+  if (!confirm('删除这条画像记录？')) return;
+  spec.confirm = 'DELETE';
+  try {
+    var res = await authFetch(BASE + '/api/portrait-state/items', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(spec)
+    });
+    if (!res) return;
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(data.error || data.reason || '删除失败');
+    setPortraitMaintainMessage('已删除画像记录。', 'ok');
+    await loadPortraitState();
+  } catch (e) {
+    setPortraitMaintainMessage('删除失败: ' + e.message, 'error');
+  }
 }
 
 function renderPortraitEvidence(evidence) {
@@ -3667,6 +3750,7 @@ function renderProfileFactCard(fact) {
         confirmButton +
         '<button type="button" onclick="editProfileFact(\'' + jsString(id) + '\')">编辑</button>' +
         '<button type="button" class="danger" onclick="runProfileFactAction(\'' + jsString(id) + '\', \'deprecate\')">废弃</button>' +
+        '<button type="button" class="danger" onclick="deleteProfileFact(\'' + jsString(id) + '\')">删除</button>' +
         '<button type="button" onclick="showDetail(\'' + jsString(id) + '\')">打开</button>' +
       '</div>' +
     '</div>' +
@@ -3697,6 +3781,26 @@ async function runProfileFactAction(id, action, payload) {
     await loadBuckets();
   } catch (e) {
     alert('画像事实操作失败: ' + e.message);
+  }
+}
+
+async function deleteProfileFact(id) {
+  var fact = profileFactById(id);
+  if (!fact) return;
+  if (!confirm('彻底删除这条画像事实？\n\n' + (fact.fact || id))) return;
+  try {
+    var res = await authFetch(BASE + '/api/profile-facts/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ confirm: 'DELETE' })
+    });
+    if (!res) return;
+    var data = await res.json().catch(function() { return {}; });
+    if (!res.ok) throw new Error(data.error || data.reason || '删除失败');
+    await loadProfileFacts();
+    await loadBuckets();
+  } catch (e) {
+    alert('画像事实删除失败: ' + e.message);
   }
 }
 

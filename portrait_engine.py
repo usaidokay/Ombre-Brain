@@ -21,6 +21,7 @@ PATCH_KEYS = (
     "add_recent_activity",
     "move_to_staging",
     "rewrite_mid_term",
+    "rewrite_stable",
     "stable_candidate",
     "profile_fact_candidate",
     "skip",
@@ -57,6 +58,14 @@ PORTRAIT_PROMPT_TEMPLATE = """你是 {ai_name}，正在维护你和 {user_displa
       "confidence": 0.72
     }}
   ],
+  "rewrite_stable": [
+    {{
+      "scope": "user|persona|relationship",
+      "text": "长期稳定画像。必须是一整段，可在 previous_portrait.stable 基础上维护",
+      "evidence": [{{"bucket_id": "证据桶id"}}],
+      "confidence": 0.82
+    }}
+  ],
   "stable_candidate": [],
   "profile_fact_candidate": [],
   "skip": []
@@ -69,11 +78,13 @@ PORTRAIT_PROMPT_TEMPLATE = """你是 {ai_name}，正在维护你和 {user_displa
 - add_recent_activity 只回答“{user_display_name}最近在做什么/推进什么/忙什么”，偏项目、生活事项、正在处理的问题；不要写纯情绪、关系天气或长期偏好。
 - 不要滥用“{user_display_name}喜欢...”。只有证据明确表达稳定偏好、反复选择或清楚的喜欢时才写 user 偏好；关系天气、撒娇、确认、互动模式优先写 relationship。
 - initial_run=true 时，add_recent 和 add_recent_activity 只放真正短期/当天或最近几天观察；高置信、能跨窗口携带的观察应放入 move_to_staging。每个 scope 尽量给 1-3 条 move_to_staging，除非证据不足。
-- rewrite_mid_term 可综合 staging_pool 或本次 move_to_staging；初次初始化时，如果本次 move_to_staging 已足够支撑，可以写一条谨慎的 mid_term。
-- 输出要克制：daily_summary 最多60字，add_recent 最多4条，add_recent_activity 最多3条，move_to_staging 最多8条，rewrite_mid_term 最多3条，每条 text 最多70字。
+- rewrite_mid_term 要把一个 scope 维护成一整段，不要输出多条近似碎片；它可综合 staging_pool 或本次 move_to_staging。
+- rewrite_stable 要把一个 scope 的长期画像维护成一整段，在 previous_portrait.stable 基础上增删改；只有跨多日反复出现或已经由 mid_term/staging 支撑、未来换窗仍有用时才写。
+- 输出要克制：daily_summary 最多60字，add_recent 最多4条，add_recent_activity 最多3条，move_to_staging 最多8条，rewrite_mid_term 每个 scope 最多1条，rewrite_stable 每个 scope 最多1条，每条 text 最多160字。
 - profile_fact_candidate 只提候选，不确认、不写入长期 profile_fact。
-- stable_candidate 只提候选，不直接覆盖 stable portrait。
+- stable_candidate 只提候选；如果你有足够证据更新 stable portrait，优先输出 rewrite_stable。
 - rewrite_mid_term 只能综合 staging_pool 里的观察，或本次明确 move_to_staging 的观察；不要直接把当天新材料写成 mid_term。
+- rewrite_stable 不能只根据当天新材料；必须有 previous_portrait 或 staging/mid-term 证据支撑。
 - memory_materials 含路径、tags、created 日期、关键 moment/reflection 片段，以及 source_excerpt 原文短摘；优先读证据原味，不要要求更长正文。
 - 每条 add/rewrite/candidate 都必须带 evidence；没有证据就放 skip。
 - 输出 JSON 对象，不要 markdown，不要解释。"""
@@ -305,6 +316,87 @@ class DailyPortraitMaintainer:
             f.write("\n")
         os.replace(tmp_path, self.state_path)
 
+    def delete_state_item(
+        self,
+        *,
+        area: str,
+        scope: str = "",
+        layer: str = "",
+        index: int | None = None,
+        text: str = "",
+    ) -> dict:
+        state = self.load_state()
+        area = str(area or "").strip()
+        scope = str(scope or "").strip()
+        layer = str(layer or "").strip()
+        expected_text = str(text or "").strip()
+
+        if area == "portrait":
+            if scope not in PORTRAIT_SCOPES:
+                return {"status": "invalid", "reason": "invalid_scope"}
+            scope_state = state["portrait"][scope]
+            if layer in {"stable", "mid_term"}:
+                current = str(scope_state.get(layer) or "").strip()
+                if not current:
+                    return {"status": "not_found", "reason": "empty_layer"}
+                if expected_text and self._norm(current) != self._norm(expected_text):
+                    return {"status": "conflict", "reason": "text_mismatch"}
+                if layer == "stable":
+                    scope_state["stable"] = ""
+                    scope_state["stable_evidence"] = []
+                    scope_state["stable_source_dates"] = []
+                    scope_state["stable_source_date"] = ""
+                    scope_state["stable_updated_at"] = ""
+                else:
+                    scope_state["mid_term"] = ""
+                    scope_state["mid_term_evidence"] = []
+                    scope_state["mid_term_source_dates"] = []
+                    scope_state["mid_term_source_date"] = ""
+                    scope_state["mid_term_updated_at"] = ""
+                state["updated_at"] = self._now_utc()
+                self.save_state(state)
+                return {"status": "deleted", "area": area, "scope": scope, "layer": layer}
+            if layer not in {"recent_buffer", "staging_pool"}:
+                return {"status": "invalid", "reason": "invalid_layer"}
+            rows = scope_state.get(layer)
+        elif area in {"recent_activities", "stable_candidates", "profile_fact_candidates", "skipped"}:
+            rows = state.get(area)
+            scope = ""
+            layer = area
+        else:
+            return {"status": "invalid", "reason": "invalid_area"}
+
+        if not isinstance(rows, list):
+            return {"status": "invalid", "reason": "target_not_list"}
+        found_index = self._find_row_index(rows, index=index, text=expected_text)
+        if found_index is None:
+            return {"status": "not_found", "reason": "row_not_found"}
+        removed = rows.pop(found_index)
+        state["updated_at"] = self._now_utc()
+        self.save_state(state)
+        return {
+            "status": "deleted",
+            "area": area,
+            "scope": scope,
+            "layer": layer,
+            "index": found_index,
+            "text": removed.get("text", "") if isinstance(removed, dict) else "",
+        }
+
+    def _find_row_index(self, rows: list, *, index: int | None, text: str) -> int | None:
+        if index is not None and 0 <= index < len(rows):
+            if not text:
+                return index
+            row = rows[index]
+            if isinstance(row, dict) and self._norm(row.get("text", "")) == self._norm(text):
+                return index
+        if text:
+            needle = self._norm(text)
+            for idx, row in enumerate(rows):
+                if isinstance(row, dict) and self._norm(row.get("text", "")) == needle:
+                    return idx
+        return None
+
     def build_handoff_sections(self, *, max_recent_items: int = 4) -> dict[str, str]:
         state = self.load_state()
         portrait = state.get("portrait", {}) if isinstance(state.get("portrait"), dict) else {}
@@ -506,6 +598,7 @@ class DailyPortraitMaintainer:
 
         for key, bucket_ids, session_ids, missing_reason in (
             ("rewrite_mid_term", staging_bucket_ids, staging_session_ids, "missing_staging_evidence"),
+            ("rewrite_stable", known_bucket_ids, known_session_ids, "missing_valid_evidence"),
             ("stable_candidate", known_bucket_ids, known_session_ids, "missing_valid_evidence"),
             ("profile_fact_candidate", known_bucket_ids, known_session_ids, "missing_valid_evidence"),
             ("skip", set(), set(), "missing_valid_evidence"),
@@ -530,6 +623,11 @@ class DailyPortraitMaintainer:
         daily_summary = str(patch.get("daily_summary") or "").strip()
         if daily_summary:
             normalized["daily_summary"] = self._clip(daily_summary, 160)
+        for key in ("rewrite_mid_term", "rewrite_stable"):
+            by_scope = {}
+            for item in normalized.get(key, []) or []:
+                by_scope[item["scope"]] = item
+            normalized[key] = [by_scope[scope] for scope in PORTRAIT_SCOPES if scope in by_scope]
         return normalized, rejected
 
     def _normalize_patch_item(
@@ -616,6 +714,9 @@ class DailyPortraitMaintainer:
             for item in materials.get("persona_events", []) or []
             if isinstance(item, dict) and str(item.get("session_id") or "") and str(item.get("source_date") or "")
         }
+        previous_bucket_dates, previous_session_dates = self._portrait_evidence_date_maps(
+            materials.get("previous_portrait", {})
+        )
         for key in PATCH_KEYS:
             for item in patch.get(key, []) or []:
                 if not isinstance(item, dict):
@@ -624,15 +725,65 @@ class DailyPortraitMaintainer:
                 for row in item.get("evidence", []) or []:
                     if not isinstance(row, dict):
                         continue
-                    bucket_date = bucket_dates.get(str(row.get("bucket_id") or ""))
-                    session_date = session_dates.get(str(row.get("session_id") or ""))
+                    bucket_id = str(row.get("bucket_id") or "")
+                    session_id = str(row.get("session_id") or "")
+                    bucket_date = bucket_dates.get(bucket_id)
+                    session_date = session_dates.get(session_id)
                     if bucket_date:
                         dates.add(bucket_date)
                     if session_date:
                         dates.add(session_date)
+                    dates.update(previous_bucket_dates.get(bucket_id, []))
+                    dates.update(previous_session_dates.get(session_id, []))
                 if dates:
                     item["source_dates"] = sorted(dates, reverse=True)[:4]
                     item["source_date"] = item["source_dates"][0]
+
+    def _portrait_evidence_date_maps(self, portrait: Any) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+        bucket_dates: dict[str, set[str]] = {}
+        session_dates: dict[str, set[str]] = {}
+        if not isinstance(portrait, dict):
+            return bucket_dates, session_dates
+
+        def add_rows(rows: Any) -> None:
+            for row in (rows if isinstance(rows, list) else []):
+                if not isinstance(row, dict):
+                    continue
+                dates = set(self._merge_source_dates(row.get("source_dates", []), row.get("source_date", "")))
+                if not dates:
+                    continue
+                for evidence in row.get("evidence", []) or []:
+                    if not isinstance(evidence, dict):
+                        continue
+                    bucket_id = str(evidence.get("bucket_id") or "").strip()
+                    session_id = str(evidence.get("session_id") or "").strip()
+                    if bucket_id:
+                        bucket_dates.setdefault(bucket_id, set()).update(dates)
+                    if session_id:
+                        session_dates.setdefault(session_id, set()).update(dates)
+
+        for scope in PORTRAIT_SCOPES:
+            scope_state = portrait.get(scope, {}) if isinstance(portrait.get(scope), dict) else {}
+            add_rows(scope_state.get("recent_buffer", []))
+            add_rows(scope_state.get("staging_pool", []))
+            for prefix in ("mid_term", "stable"):
+                dates = self._merge_source_dates(
+                    scope_state.get(f"{prefix}_source_dates", []),
+                    scope_state.get(f"{prefix}_source_date", ""),
+                )
+                if not dates:
+                    continue
+                for evidence in scope_state.get(f"{prefix}_evidence", []) or []:
+                    if not isinstance(evidence, dict):
+                        continue
+                    bucket_id = str(evidence.get("bucket_id") or "").strip()
+                    session_id = str(evidence.get("session_id") or "").strip()
+                    if bucket_id:
+                        bucket_dates.setdefault(bucket_id, set()).update(dates)
+                    if session_id:
+                        session_dates.setdefault(session_id, set()).update(dates)
+        add_rows(portrait.get("recent_activities", []))
+        return bucket_dates, session_dates
 
     def _recent_material_evidence_ids(self, materials: dict) -> tuple[set[str], set[str]]:
         date_key = str(materials.get("date") or "").strip()
@@ -824,7 +975,18 @@ class DailyPortraitMaintainer:
             scope_state = portrait[item["scope"]]
             scope_state["mid_term"] = item["text"]
             scope_state["mid_term_evidence"] = item["evidence"]
+            source_dates = self._merge_source_dates([], item.get("source_dates", []))
+            scope_state["mid_term_source_dates"] = source_dates
+            scope_state["mid_term_source_date"] = source_dates[0] if source_dates else item.get("source_date", "")
             scope_state["mid_term_updated_at"] = self._now_utc()
+        for item in patch.get("rewrite_stable", []):
+            scope_state = portrait[item["scope"]]
+            scope_state["stable"] = item["text"]
+            scope_state["stable_evidence"] = item["evidence"]
+            source_dates = self._merge_source_dates([], item.get("source_dates", []))
+            scope_state["stable_source_dates"] = source_dates
+            scope_state["stable_source_date"] = source_dates[0] if source_dates else item.get("source_date", "")
+            scope_state["stable_updated_at"] = self._now_utc()
         for item in patch.get("stable_candidate", []):
             self._upsert_candidate(state["stable_candidates"], item, date_key)
         for item in patch.get("profile_fact_candidate", []):
@@ -1187,8 +1349,10 @@ class DailyPortraitMaintainer:
                 "staging_pool": (portrait.get(scope, {}) or {}).get("staging_pool", [])[:8],
                 "mid_term": (portrait.get(scope, {}) or {}).get("mid_term", ""),
                 "mid_term_evidence": (portrait.get(scope, {}) or {}).get("mid_term_evidence", [])[:8],
+                "mid_term_source_dates": (portrait.get(scope, {}) or {}).get("mid_term_source_dates", [])[:8],
                 "stable": (portrait.get(scope, {}) or {}).get("stable", ""),
                 "stable_evidence": (portrait.get(scope, {}) or {}).get("stable_evidence", [])[:8],
+                "stable_source_dates": (portrait.get(scope, {}) or {}).get("stable_source_dates", [])[:8],
             }
             for scope in PORTRAIT_SCOPES
         }
@@ -1390,9 +1554,13 @@ class DailyPortraitMaintainer:
                     "staging_pool": [],
                     "mid_term": "",
                     "mid_term_evidence": [],
+                    "mid_term_source_dates": [],
+                    "mid_term_source_date": "",
                     "mid_term_updated_at": "",
                     "stable": "",
                     "stable_evidence": [],
+                    "stable_source_dates": [],
+                    "stable_source_date": "",
                     "stable_updated_at": "",
                 }
                 for scope in PORTRAIT_SCOPES

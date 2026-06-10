@@ -1540,6 +1540,59 @@ async def test_api_profile_fact_update_edits_and_deprecates(monkeypatch, bucket_
 
 
 @pytest.mark.asyncio
+async def test_api_profile_fact_delete_removes_bucket_and_indexes(monkeypatch, bucket_mgr, test_config):
+    import server
+    from memory_edges import MemoryEdgeStore
+    from memory_moments import MemoryMomentStore
+    from memory_nodes import MemoryNodeStore
+
+    evidence_id = await bucket_mgr.create(content="小雨喜欢准确时间。", name="时间证据")
+    profile_id = await bucket_mgr.create(
+        content="### fact\n小雨喜欢准确时间。",
+        tags=["profile_fact", "profile_preference"],
+        domain=["profile", "preference"],
+        name="时间画像事实",
+        bucket_type="permanent",
+        source="profile_fact",
+        extra_metadata={
+            "profile_kind": "preference",
+            "subject": "user",
+            "predicate": "likes_time_accuracy",
+            "object": "accurate time",
+            "evidence": [{"bucket_id": evidence_id}],
+        },
+    )
+    moment_store = MemoryMomentStore(test_config)
+    edge_store = MemoryEdgeStore(test_config)
+    node_store = MemoryNodeStore(test_config)
+    profile_bucket = await bucket_mgr.get(profile_id)
+    moment_store.upsert_bucket(profile_bucket)
+    node_store.upsert_bucket(profile_bucket)
+    embedding_engine = CapturingEmbeddingEngine()
+
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "memory_moment_store", moment_store)
+    monkeypatch.setattr(server, "memory_edge_store", edge_store)
+    monkeypatch.setattr(server, "memory_node_store", node_store)
+    monkeypatch.setattr(server, "embedding_engine", embedding_engine)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    response = await server.api_profile_fact_delete(
+        DummyRequest(
+            body={"confirm": "DELETE"},
+            path_params={"bucket_id": profile_id},
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert payload["status"] == "deleted"
+    assert await bucket_mgr.get(profile_id) is None
+    assert embedding_engine.deleted == [profile_id]
+    assert moment_store.list_for_bucket(profile_id) == []
+
+
+@pytest.mark.asyncio
 async def test_api_profile_fact_proposals_filters_to_evidence_bound_candidates(monkeypatch, bucket_mgr):
     import server
 
@@ -2889,6 +2942,49 @@ async def test_api_portrait_state_reports_readonly_state(monkeypatch, tmp_path):
     assert payload["recent_activities"][0]["text"] == "小雨最近在看 portrait dashboard。"
     assert payload["stable_candidates"][0]["text"] == "候选稳定画像"
     assert payload["profile_fact_candidates"][0]["text"] == "候选画像事实"
+
+
+@pytest.mark.asyncio
+async def test_api_portrait_state_item_delete(monkeypatch, tmp_path, test_config):
+    import server
+    from portrait_engine import DailyPortraitMaintainer
+
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(tmp_path / "portrait_state.json"),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["portrait"]["user"]["staging_pool"].append(
+        {"text": "这条用户画像应该能删除。", "evidence": [{"bucket_id": "bucket-user"}]}
+    )
+    engine.save_state(state)
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "portrait_engine", engine)
+
+    response = await server.api_portrait_state_item_delete(
+        DummyRequest(
+            body={
+                "confirm": "DELETE",
+                "area": "portrait",
+                "scope": "user",
+                "layer": "staging_pool",
+                "index": 0,
+                "text": "这条用户画像应该能删除。",
+            }
+        )
+    )
+    payload = json.loads(response.body)
+    loaded = engine.load_state()
+
+    assert response.status_code == 200
+    assert payload["status"] == "deleted"
+    assert loaded["portrait"]["user"]["staging_pool"] == []
 
 
 @pytest.mark.asyncio
