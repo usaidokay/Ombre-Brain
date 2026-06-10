@@ -111,6 +111,39 @@ QUERY_PLANNER_GENERIC_TERMS = {
     "聊天",
     "对话",
 }
+SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS = QUERY_PLANNER_GENERIC_TERMS | {
+    "一下",
+    "一次",
+    "今天",
+    "昨天",
+    "明天",
+    "现在",
+    "当前",
+    "刚才",
+    "刚刚",
+    "每天",
+    "这次",
+    "那次",
+    "这个",
+    "那个",
+    "这条",
+    "那条",
+    "什么",
+    "为什么",
+    "怎么",
+    "知道",
+    "想起",
+    "想起来",
+    "可以",
+    "是不是",
+    "有没有",
+    "相关",
+    "相关联",
+    "里面",
+    "写着",
+    "提出",
+    "答应",
+}
 MEMORY_DETAIL_REQUEST_RE = re.compile(
     r"^\s*\[memory_detail\s+ids\s*=\s*([\"'])(?P<ids>[^\"']+)\1\s*\]\s*",
     re.IGNORECASE,
@@ -4695,20 +4728,84 @@ class GatewayService:
     def _source_record_topic_terms(self, query: str, fragment: str) -> list[str]:
         terms: list[str] = []
         seen: set[str] = set()
-        for text in (query, fragment):
+        query_terms = self.recall_policy.specific_query_terms(query)
+
+        def add_term(term: str) -> bool:
+            cleaned = str(term or "").strip()
+            if not cleaned:
+                return False
+            key = cleaned.lower()
+            compact = self._compact_lookup_key(cleaned)
+            if len(compact) < 2 or key in seen:
+                return False
+            seen.add(key)
+            terms.append(cleaned)
+            return len(terms) >= 8
+
+        for term in query_terms:
+            if add_term(term):
+                return terms
+
+        query_keys = [
+            self._compact_lookup_key(term)
+            for term in query_terms
+            if len(self._compact_lookup_key(term)) >= 2
+        ]
+        for text in self._source_record_topic_windows(fragment, query_terms):
             for term in self.recall_policy.specific_query_terms(text):
                 cleaned = str(term or "").strip()
-                if not cleaned:
+                if not self._source_record_fragment_topic_term_allowed(cleaned, query_keys):
                     continue
-                key = cleaned.lower()
-                compact = self._compact_lookup_key(cleaned)
-                if len(compact) < 2 or key in seen:
-                    continue
-                seen.add(key)
-                terms.append(cleaned)
-                if len(terms) >= 8:
+                if add_term(cleaned):
                     return terms
         return terms
+
+    def _source_record_topic_windows(
+        self,
+        fragment: str,
+        query_terms: list[str],
+        *,
+        radius: int = 80,
+    ) -> list[str]:
+        text = str(fragment or "")
+        if not text:
+            return []
+        lowered = text.lower()
+        windows: list[str] = []
+        seen: set[tuple[int, int]] = set()
+        for term in query_terms or []:
+            needle = str(term or "").strip().lower()
+            if len(needle) < 2:
+                continue
+            start = 0
+            while True:
+                index = lowered.find(needle, start)
+                if index < 0:
+                    break
+                left = max(0, index - radius)
+                right = min(len(text), index + len(needle) + radius)
+                key = (left, right)
+                if key not in seen:
+                    seen.add(key)
+                    windows.append(text[left:right])
+                start = index + max(1, len(needle))
+        return windows
+
+    def _source_record_fragment_topic_term_allowed(self, term: str, query_keys: list[str]) -> bool:
+        key = self._compact_lookup_key(term)
+        if len(key) < 2 or key in SOURCE_RECORD_FRAGMENT_TOPIC_STOPWORDS:
+            return False
+        if len(key) > 24:
+            return False
+        if any(query_key and (key == query_key or key in query_key or query_key in key) for query_key in query_keys):
+            return True
+        if re.search(r"\d", key):
+            return True
+        if re.fullmatch(r"[a-z0-9_.:-]+", key):
+            return len(key) >= 3
+        if re.fullmatch(r"[\u4e00-\u9fff]+", key):
+            return len(key) >= 2
+        return bool(re.search(r"[\u4e00-\u9fff]", key))
 
     def _source_record_explicit_bucket_match_reason(self, query: str, bucket: dict) -> str:
         if not query or not isinstance(bucket, dict):

@@ -3540,7 +3540,7 @@ def test_gateway_source_record_title_match_with_content_fragment_can_diffuse(
 ):
     source_id = _create_bucket(
         bucket_mgr,
-        content="### original\n小机数据库v2.0：忠犬/小狗设定，相关联的是少女暴君与成男艳后。",
+        content="### original\n小机数据库v2.0：每天都做承诺，忠犬/小狗设定，相关联的是少女暴君与成男艳后。",
         name="小机数据库v2.0",
         hours_ago=12,
         tags=["raw_source"],
@@ -3555,7 +3555,7 @@ def test_gateway_source_record_title_match_with_content_fragment_can_diffuse(
     )
     noise_id = _create_bucket(
         bucket_mgr,
-        content="### moment\n这是一条没有片段主题证据的远处背景。",
+        content="### moment\n每天记录天气，这是一条没有片段主题证据的远处背景。",
         name="无关大背景",
         hours_ago=24,
     )
