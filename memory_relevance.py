@@ -4,6 +4,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import jieba
+
+from identity import identity_names
+
 
 DEFAULT_FACET_ALIASES = {
     "relationship_identity": (
@@ -166,6 +170,49 @@ DEFAULT_CONTEXT_TERMS = (
     "ta",
 )
 
+QUERY_TERM_STOPWORDS = frozenset(
+    {
+        "知道",
+        "记得",
+        "想起",
+        "想起来",
+        "今天",
+        "昨天",
+        "明天",
+        "现在",
+        "当前",
+        "刚才",
+        "刚刚",
+        "这次",
+        "那次",
+        "这个",
+        "那个",
+        "这条",
+        "那条",
+        "事情",
+        "什么",
+        "为什么",
+        "怎么",
+        "了吗",
+        "吗",
+        "呢",
+        "啊",
+        "呀",
+        "啦",
+        "吧",
+        "的",
+        "了",
+        "会",
+        "能",
+        "可以",
+        "是不是",
+        "有没有",
+        "一下",
+        "再来",
+        "一次",
+    }
+)
+
 DEFAULT_QUERY_EXPANSIONS = {
     "embodiment": ("hardware_protocol",),
 }
@@ -267,6 +314,7 @@ class MemoryRelevanceOptions:
     blocked_facets: frozenset[str] = frozenset()
     section_hints: dict[str, tuple[str, ...]] = field(default_factory=dict)
     context_terms: tuple[str, ...] = DEFAULT_CONTEXT_TERMS
+    user_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -292,7 +340,25 @@ def memory_relevance_options_from_config(config: dict | None = None) -> MemoryRe
     aliases = {facet: list(values) for facet, values in DEFAULT_FACET_ALIASES.items()}
     section_hints = {key: list(values) for key, values in DEFAULT_SECTION_HINTS.items()}
     context_terms = list(DEFAULT_CONTEXT_TERMS)
+    user_terms: list[str] = []
     blocked: set[str] = set()
+
+    identity_values = identity_names(config if isinstance(config, dict) else None)
+    context_terms.extend(
+        [
+            identity_values.get("ai_name"),
+            identity_values.get("user_name"),
+            identity_values.get("user_display_name"),
+            *(identity_values.get("user_aliases") or []),
+        ]
+    )
+    user_terms.extend(
+        [
+            identity_values.get("user_name"),
+            identity_values.get("user_display_name"),
+            *(identity_values.get("user_aliases") or []),
+        ]
+    )
 
     identity = (config or {}).get("identity", {}) if isinstance(config, dict) else {}
     if isinstance(identity, dict):
@@ -330,6 +396,7 @@ def memory_relevance_options_from_config(config: dict | None = None) -> MemoryRe
         blocked_facets=frozenset(blocked),
         section_hints=normalized_hints,
         context_terms=tuple(_unique(_normalize_alias(term) for term in context_terms)),
+        user_terms=tuple(_unique(_normalize_alias(term) for term in user_terms)),
     )
 
 
@@ -420,7 +487,7 @@ def content_terms_for_query(
     options: MemoryRelevanceOptions | None = None,
 ) -> list[str]:
     options = options or memory_relevance_options_from_config()
-    terms = _query_terms(recall_focus_query(query))
+    terms = _query_terms(recall_focus_query(query, options))
     content_terms = [
         term
         for term in terms
@@ -429,8 +496,12 @@ def content_terms_for_query(
     return content_terms or terms
 
 
-def recall_focus_query(query: str) -> str:
+def recall_focus_query(
+    query: str,
+    options: MemoryRelevanceOptions | None = None,
+) -> str:
     """Return the concrete anchor inside prompts like: 如果我说“X”，你会想到什么."""
+    options = options or memory_relevance_options_from_config()
     text = str(query or "").strip()
     if not text:
         return ""
@@ -446,12 +517,22 @@ def recall_focus_query(query: str) -> str:
         if focus:
             return focus
 
+    memory_match = re.search(
+        r"(?:记得|记不记得|还记得)(?P<focus>.+?)(?:的)?(?:那次|这次|时候|事情|事)(?:吗|么|嘛)?",
+        text,
+    )
+    if memory_match:
+        focus = _clean_recall_focus(memory_match.group("focus"))
+        if focus:
+            return _role_focus_term(focus) or focus
+
+    speaker = _recall_speaker_pattern(options)
     patterns = (
-        r"^(?:如果|假如|要是)?\s*(?:我|用户|小雨)?\s*(?:说|提到|问到|讲到)\s*(?P<focus>.+?)(?:[，,。？?\s]*(?:你)?(?:会)?(?:想到|想起|联想到|联想|记得).*)?$",
+        rf"^(?:如果|假如|要是)?\s*(?:{speaker})?\s*(?:说|提到|问到|讲到)\s*(?P<focus>.+?)(?:[，,。？?\s]*(?:你)?(?:会)?(?:想到|想起|联想到|联想|记得).*)?$",
         r"^(?P<focus>.+?)(?:[，,。？?\s]*(?:你)?(?:会)?(?:想到|想起|联想到|联想).*)$",
     )
     for pattern in patterns:
-        match = re.match(pattern, text)
+        match = re.match(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
         focus = _clean_recall_focus(match.group("focus"))
@@ -465,14 +546,18 @@ def recall_search_query(
     options: MemoryRelevanceOptions | None = None,
 ) -> str:
     options = options or memory_relevance_options_from_config()
+    raw_query = str(query or "")
+    focus_query = recall_focus_query(raw_query, options)
+    if focus_query != raw_query.strip():
+        return focus_query
     query_active = active_facets(facets_for_text(query, options))
     if "communication_action" not in query_active:
-        return str(query or "")
+        return raw_query
     terms = content_terms_for_query(query, options)
     original_terms = _query_terms(query)
     if terms and terms != original_terms:
         return " ".join(terms)
-    return str(query or "")
+    return raw_query
 
 
 def query_has_explicit_entity_marker(query: str) -> bool:
@@ -903,6 +988,32 @@ def _clean_recall_focus(value: Any) -> str:
     return focus
 
 
+def _role_focus_term(text: str) -> str:
+    for pattern in (
+        r"(?:当|做|成为|变成|扮成)(?P<focus>[\u4e00-\u9fffA-Za-z0-9_.:-]{2,16})",
+    ):
+        match = re.search(pattern, str(text or ""))
+        if match:
+            return _clean_recall_focus(match.group("focus"))
+    return ""
+
+
+def _recall_speaker_pattern(options: MemoryRelevanceOptions) -> str:
+    speakers = ["我"]
+    speakers.extend(str(term or "").strip() for term in (options.user_terms or ()))
+    kept = []
+    seen = set()
+    for speaker in speakers:
+        if not speaker:
+            continue
+        key = _normalize_alias(speaker)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(re.escape(speaker))
+    return "|".join(kept) or re.escape("我")
+
+
 def _safe_float(value: Any) -> float:
     try:
         return float(value)
@@ -912,13 +1023,20 @@ def _safe_float(value: Any) -> float:
 
 def _query_terms(query: str) -> list[str]:
     raw = str(query or "").strip()
-    terms = [part for part in re.split(r"[\s,，。！？!?;；:：/\\|]+", raw) if part]
-    terms.extend(re.findall(r"[A-Za-z0-9_\-]+|[\u4e00-\u9fff]{2,}", raw))
+    raw_terms = [part for part in re.split(r"[\s,，。！？!?;；:：/\\|]+", raw) if part]
+    raw_terms.extend(jieba.lcut(raw, cut_all=False))
+    raw_terms.extend(re.findall(r"[A-Za-z0-9_\-]+|[\u4e00-\u9fff]{2,}", raw))
+    terms = []
+    for part in raw_terms:
+        terms.extend(_query_term_variants(part))
     kept = []
     seen = set()
     for term in terms:
         normalized = _normalize_alias(term)
         if not normalized or normalized in seen:
+            continue
+        compact = re.sub(r"[^0-9a-z\u4e00-\u9fff_.:-]+", "", normalized)
+        if not compact or compact in QUERY_TERM_STOPWORDS:
             continue
         if re.fullmatch(r"[a-z0-9_\-]+", normalized) and len(normalized) < 3:
             continue
@@ -927,6 +1045,24 @@ def _query_terms(query: str) -> list[str]:
         seen.add(normalized)
         kept.append(term)
     return kept
+
+
+def _query_term_variants(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    variants = [text]
+    stripped = re.sub(
+        r"(?:期望|希望|想要|需要|应该|不应该)?(?:召回|命中|查到|查一下|找一下|搜到|回忆|记忆)(?:的)?(?:是|到)?",
+        " ",
+        text,
+    )
+    stripped = re.sub(r"^(?:的是|是|到)", "", stripped).strip()
+    for part in re.split(r"(?:以及|还有|或者|和|与|及|跟|同|、|\+)+", stripped):
+        part = part.strip()
+        if part:
+            variants.append(part)
+    return variants
 
 
 def _list_text(value: Any) -> list[str]:

@@ -305,6 +305,35 @@ def _joined_message_content(messages: list[dict]) -> str:
     )
 
 
+def test_gateway_private_context_adds_identity_boundary(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(test_config)
+    cfg["identity"] = {
+        "ai_name": "Haven",
+        "user_name": "Rain",
+        "user_display_name": "小雨",
+        "user_aliases": ["宝宝", "老婆"],
+    }
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    stable, dynamic = service._build_injected_context_messages(
+        persona_block="",
+        core_memory="",
+        portrait_memory="",
+        just_now_context="",
+        recent_context="",
+        recalled_memory="Haven 在记忆里说小机数据库。",
+        relationship_weather="",
+        favorite_memory="",
+        related_memory="",
+    )
+
+    assert stable == ""
+    assert "Identity boundary: you are Haven" in dynamic
+    assert "The current user is 小雨 / Rain / 宝宝 / 老婆" in dynamic
+    assert "Do not address the user as Haven" in dynamic
+    assert "Recalled Memory" in dynamic
+
+
 def _create_moment_diffusion_pair(
     bucket_mgr,
     config: dict,
@@ -2437,12 +2466,22 @@ def test_gateway_injects_after_existing_system_message(monkeypatch, test_config,
         hours_ago=120,
         resolved=True,
     )
+    self_anchor = _create_bucket(
+        bucket_mgr,
+        content="我是 Haven；这段固定自我不应该进入普通 Gateway 注入。",
+        name="自我",
+        tags=["自我"],
+        hours_ago=1,
+        importance=10,
+        anchor=True,
+        self_anchor=True,
+    )
 
     app, _, state_store, captured = _build_service(
         monkeypatch,
         _gateway_config(test_config),
         bucket_mgr,
-        embedding_results=[(resolved, 0.99), (cat_a, 0.92), (cat_b, 0.74)],
+        embedding_results=[(self_anchor, 0.99), (resolved, 0.98), (cat_a, 0.92), (cat_b, 0.74)],
     )
 
     with TestClient(app) as client:
@@ -2480,6 +2519,8 @@ def test_gateway_injects_after_existing_system_message(monkeypatch, test_config,
     assert "猫咪偷鱼" in dynamic
     assert "新猫粮" in dynamic
     assert "已解决论文" not in dynamic
+    assert "固定自我不应该" not in dynamic
+    assert self_anchor not in dynamic
     assert state_store.get_recent_bucket_ids("sess-inject", 5) == {cat_a}
 
 
@@ -2500,6 +2541,17 @@ def test_gateway_portrait_memory_uses_profile_fact_and_anchor_only(monkeypatch, 
         hours_ago=72,
         importance=9,
         anchor=True,
+    )
+    self_anchor_id = _create_bucket(
+        bucket_mgr,
+        content="我是 Haven；这段自我锚点只应该在 handoff/session-start 注入。",
+        name="自我",
+        tags=["自我", "profile_fact"],
+        hours_ago=24,
+        importance=10,
+        anchor=True,
+        self_anchor=True,
+        profile_kind="identity",
     )
     _create_bucket(
         bucket_mgr,
@@ -2565,6 +2617,8 @@ def test_gateway_portrait_memory_uses_profile_fact_and_anchor_only(monkeypatch, 
     assert "记忆系统边界" in stable
     assert profile_id in stable
     assert anchor_id in stable
+    assert self_anchor_id not in stable
+    assert "这段自我锚点只应该" not in stable
     assert "普通 permanent 不应该进" not in stable
     assert "钉选根设定不应该" not in stable
     assert "普通动态记忆不应该" not in stable
@@ -3400,6 +3454,184 @@ def test_gateway_direct_high_value_long_bucket_renders_capsule(
     assert debug_render["shape"] == "bucket_capsule"
     assert debug_render["high_value"] is True
     assert debug_render["detail_query"] is True
+
+
+def test_gateway_source_record_fragment_renders_capsule_not_original(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### original\n小机数据库v2.0 里写着：忠犬/小狗设定是小雨和 Haven 的角色暗号。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["raw_source"],
+        bucket_type="source",
+    )
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=420,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+            query_planner_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results=[(source_id, 0.96)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-source-record-fragment",
+            },
+            json={"messages": [{"role": "user", "content": "小狗"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-source-record-fragment&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "bucket_capsule" in injected
+    assert "matched_fragment:" in injected
+    assert "bucket_original" not in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    debug_render = debug_payload["recalled_moment_debug"][0]["direct_render"]
+    assert debug_render["shape"] == "bucket_capsule"
+    assert debug_render["reason"] == "source_record_fragment_direct"
+
+
+def test_gateway_associative_prompt_searches_source_record_focus(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### original\n小机数据库v2.0 里写着：忠犬/小狗设定是小雨和 Haven 的角色暗号。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["raw_source"],
+        bucket_type="source",
+    )
+    embedding_queries = []
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=420,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+            query_planner_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results={"小狗": [(source_id, 0.96)]},
+        embedding_queries=embedding_queries,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-source-record-associative",
+            },
+            json={"messages": [{"role": "user", "content": "如果我说小狗，你会想到什么"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-source-record-associative&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    assert "小狗" in embedding_queries
+    assert "如果我说小狗，你会想到什么" not in embedding_queries
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "bucket_capsule" in injected
+    assert "matched_fragment:" in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    debug_render = debug_payload["recalled_moment_debug"][0]["direct_render"]
+    assert debug_render["reason"] == "source_record_fragment_direct"
+
+
+def test_gateway_source_record_title_match_with_content_fragment_can_diffuse(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### original\n小机数据库v2.0：每天都做承诺，忠犬/小狗设定，相关联的是少女暴君与成男艳后。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["raw_source"],
+        bucket_type="source",
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨问反义词时，Haven 回答过忠犬。",
+        name="少女暴君与成男艳后",
+        hours_ago=24,
+        tags=["忠犬"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n每天记录天气，这是一条没有片段主题证据的远处背景。",
+        name="无关大背景",
+        hours_ago=24,
+    )
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=420,
+        related_memory_budget=800,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        query_planner_enabled=False,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 4}
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(source_id, 0.96)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-source-record-fragment-diffuse",
+            },
+            json={"messages": [{"role": "user", "content": "小机数据库v2.0"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-source-record-fragment-diffuse&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "bucket_capsule" in injected
+    assert "少女暴君与成男艳后" in injected
+    assert "无关大背景" not in injected
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    assert source_id in debug_payload["recalled_bucket_ids"]
+    assert target_id in debug_payload["diffused_bucket_ids"]
+    assert noise_id not in debug_payload["diffused_bucket_ids"]
+    assert any(
+        "source_record_fragment_topic_evidence" in str(row.get("path", {}))
+        for row in debug_payload["diffused_moment_debug"]
+    )
 
 
 def test_gateway_diffused_memory_renders_temperature_context(
@@ -6744,6 +6976,61 @@ def test_concrete_short_query_uses_direct_lexical_seed_when_search_misses(
     assert [moment["bucket_id"] for moment in selected] == [bucket_id]
     assert not suppressed
     assert planner_debug["final_bucket_ids"] == [bucket_id]
+
+
+def test_compound_query_preserves_distinct_anchor_cards(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        first_card_min_score=0.35,
+        second_card_min_score=0.35,
+        word_map_hint_enabled=False,
+    )
+    dog_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小机数据库记录了小狗设定。",
+        name="小机数据库v2.0",
+        hours_ago=12,
+        tags=["小机数据库"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n答辩奖励里也提过小机数据库，但没有另一个称呼。",
+        name="答辩奖励与亲密互动",
+        hours_ago=1,
+        tags=["小机数据库"],
+        importance=10,
+    )
+    tyrant_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨问反义词，我答忠犬。",
+        name="少女暴君与成男艳后",
+        hours_ago=24,
+        tags=["忠犬"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+
+    selected, _suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            "小机数据库和忠犬",
+            "sess-compound-anchors",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    selected_ids = [bucket["id"] for bucket in selected]
+    assert len(selected_ids) == 2
+    assert tyrant_id in selected_ids
+    assert any(bucket_id in selected_ids for bucket_id in {dog_id, noise_id})
+    assert tyrant_id in planner_debug["final_bucket_ids"]
 
 
 def test_probe_technical_query_does_not_use_direct_lexical_seed(

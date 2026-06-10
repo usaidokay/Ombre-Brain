@@ -137,8 +137,63 @@ def test_associative_prompt_uses_quoted_focus_as_query_terms():
     assert recall_focus_query("如果我说小狗，你会想到什么") == "小狗"
     assert recall_focus_query("小狗会想到什么") == "小狗"
     assert content_terms_for_query("如果我说“小狗”，你会想到什么") == ["小狗"]
+    assert recall_search_query("如果我说“小狗”，你会想到什么") == "小狗"
+    assert recall_search_query("如果我说小狗，你会想到什么") == "小狗"
+    assert recall_search_query("小狗会想到什么") == "小狗"
+    assert recall_focus_query("再来一次！记得哥哥当小狗的那次吗") == "小狗"
+    assert recall_search_query("再来一次！记得哥哥当小狗的那次吗") == "小狗"
+    assert content_terms_for_query("再来一次！记得哥哥当小狗的那次吗") == ["小狗"]
     assert recall_focus_query("你会想到什么") == ""
     assert content_terms_for_query("你会想到什么") == []
+    assert recall_search_query("你会想到什么") == ""
+
+
+def test_associative_prompt_uses_identity_user_terms_not_hardcoded_names():
+    options = memory_relevance_options_from_config(
+        {
+            "identity": {
+                "ai_name": "Lapis",
+                "user_name": "Nina",
+                "user_display_name": "妮娜",
+                "user_aliases": ["主人"],
+            }
+        }
+    )
+
+    assert recall_focus_query("如果Nina说蓝色，你会想到什么", options) == "蓝色"
+    assert recall_focus_query("如果妮娜提到流星，你会想到什么", options) == "流星"
+    assert recall_focus_query("如果主人问到小狗，你会想到什么", options) == "小狗"
+
+
+def test_query_terms_combine_jieba_and_regex_tokens():
+    terms = content_terms_for_query("哥哥当小狗设定")
+
+    assert "小狗" in terms
+    assert "哥哥当小狗设定" in terms
+
+
+def test_query_terms_filter_jieba_filler_words():
+    terms = content_terms_for_query("那哥哥知道我今天为什么激动哭了吗")
+
+    assert "激动" in terms
+    assert "知道" not in terms
+    assert "今天" not in terms
+    assert "为什么" not in terms
+
+    memory_terms = content_terms_for_query("记忆工具跑通那次")
+    assert "工具" in memory_terms
+    assert "跑通" in memory_terms
+    assert "那次" not in memory_terms
+
+
+def test_compound_recall_terms_keep_individual_anchors():
+    terms = content_terms_for_query("小机数据库和忠犬")
+    wrapped_terms = content_terms_for_query("唉......期望召回的是小机数据库和忠犬......")
+
+    assert "小机数据库" in terms
+    assert "忠犬" in terms
+    assert "小机数据库" in wrapped_terms
+    assert "忠犬" in wrapped_terms
 
 
 def test_explicit_entity_marker_handles_titlecase_entities_without_sentence_starters():

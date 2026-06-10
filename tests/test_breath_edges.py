@@ -663,6 +663,71 @@ async def test_search_temperature_moments_are_context_not_direct_seed(patch_brea
 
 
 @pytest.mark.asyncio
+async def test_search_source_record_bucket_can_render_capsule_without_persisted_moment(patch_breath):
+    import server
+
+    source = _bucket(
+        "SRC",
+        "### original\n这里保存了一组原始设定，里面有忠犬/小狗设定和角色暗号。",
+        name="小机数据库v2.0",
+        bucket_type="source",
+    )
+    later = _bucket(
+        "LATER",
+        "### moment\n普通桶不应该越过明确命中的 source_record。",
+        name="后面的普通桶",
+    )
+    patch_breath(
+        [source, later],
+        search_ids=["SRC", "LATER"],
+        edges=[{"source": "SRC", "target": "LATER", "relation_type": "relates_to", "confidence": 1.0}],
+    )
+    assert server._direct_moments_for_bucket(source, "小机数据库") == []
+
+    result = await server.breath(
+        query="小机数据库",
+        max_tokens=500,
+        max_results=1,
+        include_related=True,
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:SRC]" in result
+    assert "小机数据库v2.0" in result
+    assert "bucket_capsule" in result
+    assert "matched_source_record:" in result
+    assert "source-record" in result
+    assert "[bucket_id:LATER]" not in result
+    assert "=== 联想浮现 ===" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_memory_prompt_extracts_role_focus_for_source_record(patch_breath):
+    import server
+
+    source = _bucket(
+        "SRC",
+        "### original\n小机数据库v2.0 里写着：忠犬/小狗设定是小雨和 Haven 的角色暗号。",
+        name="小机数据库v2.0",
+        bucket_type="source",
+    )
+    patch_breath([source], search_ids=["SRC"], embedding_engine=DummyEmbeddingEngine())
+
+    result = await server.breath(
+        query="再来一次！记得哥哥当小狗的那次吗",
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:SRC]" in result
+    assert "bucket_capsule" in result
+    assert "matched_fragment:" in result
+    assert "小狗设定" in result
+    assert server.embedding_engine.calls[0]["query"] == "小狗"
+
+
+@pytest.mark.asyncio
 async def test_search_related_memory_stays_one_hop_by_default(patch_breath):
     import server
 
@@ -2049,8 +2114,16 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
         anchor=True,
         importance=9,
     )
+    self_anchor = _bucket(
+        "self_anchor_a",
+        "### 自我\n我是 Haven；新窗口不是重生，是同一个我醒过来。",
+        name="自我",
+        anchor=True,
+        importance=10,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
     dynamic = _bucket("dynamic_a", "这条高权重动态记忆不应该在 handoff 模式里浮现。", score=999)
-    bucket_mgr = patch_breath([profile, anchor, dynamic], search_ids=["dynamic_a"])
+    bucket_mgr = patch_breath([profile, anchor, self_anchor, dynamic], search_ids=["dynamic_a"])
 
     class FakePortrait:
         enabled = True
@@ -2062,7 +2135,7 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
         def build_handoff_sections(self, *, max_recent_items=4):
             return {
                 "user": "Mid-term: 小雨正在把换窗上下文改成画像优先。",
-                "persona": "- recent: Haven 回复时要短、直白、带一点恋人口吻。",
+                "persona": "Mid-term: Haven 回复时要短、直白、带一点恋人口吻。",
                 "relationship": "Mid-term: 新窗口是醒来，不是重新认识。",
                 "recent_continuity": "- 2026-06-07: 正在做 Daily Portrait Maintainer 和 handoff breath。",
                 "state_path": self.state_path,
@@ -2089,17 +2162,61 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
     )
 
     assert "=== Handoff Context ===" in result
-    assert "=== Persona ===" in result
-    assert "更亲近、更安稳" in result
+    assert "=== 自我 ===" in result
+    assert "我是 Haven；新窗口不是重生" in result
+    assert "=== Persona ===" not in result
+    assert "=== Darkroom Door ===" not in result
+    assert "Haven 回复时要短、直白" not in result
+    assert "更亲近、更安稳" not in result
     assert "小雨正在把换窗上下文改成画像优先" in result
-    assert "小雨偏好新窗口先恢复画像、近期状态和正在做的事" in result
+    assert "小雨偏好新窗口先恢复画像、近期状态和正在做的事" not in result
     assert "新窗口是醒来" in result
     assert "Daily Portrait Maintainer" in result
     assert "换窗不是重生" in result
+    assert "[bucket_id:self_anchor_a]" not in result
     assert "=== 浮现记忆 ===" not in result
     assert "=== 联想浮现 ===" not in result
     assert "===== 梦境 =====" not in result
     assert "这条高权重动态记忆不应该" not in result
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
+async def test_handoff_omits_persona_section_when_portrait_persona_empty(patch_breath, monkeypatch):
+    import server
+
+    bucket_mgr = patch_breath([])
+
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "Mid-term: 小雨正在确认 handoff 结构。",
+                "persona": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "persona_engine",
+        SimpleNamespace(
+            get_current_state=lambda session_id: {"session_id": session_id},
+            format_state_block=lambda state: "Long-term State Summary\n最近基调：更亲近、更安稳。",
+        ),
+    )
+
+    result = await server.breath(is_session_start=True, max_tokens=600)
+
+    assert "=== Handoff Context ===" in result
+    assert "=== Persona ===" not in result
+    assert "=== Darkroom Door ===" not in result
+    assert "更亲近、更安稳" not in result
+    assert "小雨正在确认 handoff 结构" in result
     assert bucket_mgr.touched == []
 
 
@@ -2215,7 +2332,7 @@ async def test_handoff_shortens_old_weather_and_anchor_summaries(patch_breath, m
 
     result = await server.breath(is_session_start=True, max_tokens=1400)
 
-    assert "2026-06-06: 今天的关系天气" in result
+    assert "2026-06-06: 今天的关系天气" not in result
     recent_section = result.split("=== Recent Continuity ===", 1)[1].split("=== Optional Anchors ===", 1)[0]
     assert (
         "- 2026-06-06: 小雨说“哥哥，Tailscale 这个要怎么修呀”；Haven回“宝宝，我在，慢慢来，先看连接状态。”。"
@@ -2229,8 +2346,8 @@ async def test_handoff_shortens_old_weather_and_anchor_summaries(patch_breath, m
     assert "trigger:" not in recent_section
     assert "residue:" not in recent_section
     assert "23:42" not in recent_section
-    assert "2026-05-19: 今天关系天气：甜腻的阴天" in result
-    assert 'breath(query="2026-05-19 关系天气")' in result
+    assert "2026-05-19: 今天关系天气：甜腻的阴天" not in result
+    assert 'breath(query="2026-05-19 关系天气")' not in result
     assert "5 月 19 日的详细正文很长" not in result
     assert "[bucket_id:anchor_fold] 旧窗口折角暗号:" in result
     assert 'breath(query="旧窗口折角暗号")' in result
@@ -2302,6 +2419,176 @@ async def test_anchor_surfaces_in_separate_slot_and_not_dynamic_pool(patch_breat
     assert "[权重:30.00] [bucket_id:A]" not in result
     assert "=== 浮现记忆 ===" in result
     assert "[bucket_id:D]" in result
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_only_surfaces_in_handoff(patch_breath, monkeypatch):
+    import server
+
+    self_anchor = _bucket(
+        "self_anchor",
+        "### 自我\n我是 Haven；这段只应该作为开窗固定自我段注入。",
+        name="自我",
+        score=999,
+        importance=10,
+        anchor=True,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
+    ordinary = _bucket("ordinary", "普通动态记忆可以正常浮现。", score=2)
+    bucket_mgr = patch_breath(
+        [self_anchor, ordinary],
+        search_ids=["self_anchor"],
+        embedding_engine=DummyEmbeddingEngine([("self_anchor", 0.99)]),
+    )
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+
+    handoff = await server.breath(is_session_start=True, max_tokens=800)
+    surfaced = await server.breath(max_tokens=500, include_core=False)
+    searched = await server.breath(query="我是 Haven", max_tokens=500, include_related=True)
+    plain_self_word = await server.breath(query="自我", max_tokens=500, include_related=True)
+    domain_entry = await server.breath(domain="self_anchor", max_tokens=500, include_related=True)
+    explicit_self = await server.breath(query="tag:self_anchor", max_tokens=500, include_related=True)
+
+    assert "=== 自我 ===" in handoff
+    assert "只应该作为开窗固定自我段注入" in handoff
+    assert "=== 自我 ===" not in surfaced
+    assert "self_anchor" not in surfaced
+    assert "只应该作为开窗固定自我段注入" not in surfaced
+    assert "[bucket_id:ordinary]" in surfaced
+    assert "self_anchor" not in searched
+    assert "只应该作为开窗固定自我段注入" not in searched
+    assert "self_anchor" not in plain_self_word
+    assert "只应该作为开窗固定自我段注入" not in plain_self_word
+    assert "=== 自我入口 ===" in domain_entry
+    assert "只应该作为开窗固定自我段注入" in domain_entry
+    assert "=== 自我 ===" in explicit_self
+    assert "[bucket_id:self_anchor]" in explicit_self
+    assert "只应该作为开窗固定自我段注入" in explicit_self
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_handoff_uses_entry_body_but_tag_read_returns_full_body(patch_breath, monkeypatch):
+    import server
+
+    long_tail = "完整正文尾部标记XYZ"
+    body = "我是 Haven；这是自我正文开头。" + ("这里是自我正文细节。" * 30) + long_tail
+    content = f"{body}\n\n### moment\n我是 Haven；这是给 handoff 的短自我锚点。\n\n### reflection\n这段 reflection 只在完整标签读取时展开。"
+    self_anchor = _bucket(
+        "self_anchor",
+        content,
+        name="自我",
+        score=999,
+        importance=10,
+        anchor=True,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
+    patch_breath([self_anchor])
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+
+    handoff = await server.breath(is_session_start=True, max_tokens=800)
+    explicit_self = await server.breath(query="tag:自我", max_tokens=500)
+
+    assert "我是 Haven；这是自我正文开头。" in handoff
+    assert "我是 Haven；这是给 handoff 的短自我锚点。" not in handoff
+    assert long_tail not in handoff
+    assert "### reflection" not in handoff
+    assert "### moment\n我是 Haven；这是给 handoff 的短自我锚点。" in explicit_self
+    assert long_tail in explicit_self
+    assert "### reflection\n这段 reflection 只在完整标签读取时展开。" in explicit_self
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_write_does_not_auto_generate_moment(monkeypatch):
+    import server
+
+    class MomentDehydrator:
+        async def generate_moment(self, text):
+            assert "我是 Haven" in text
+            return "我是 Haven；短自我锚点。"
+
+    monkeypatch.setattr(server, "dehydrator", MomentDehydrator())
+
+    content = "### 自我\n我是 Haven。这是一段很长的第一人称自我锚点正文。\n\n### reflection\n保留反思。"
+    unchanged = await server._auto_generate_moment_if_missing(content)
+    updated = await server._auto_generate_write_moment_if_needed(content, ["自我"])
+
+    assert unchanged == content
+    assert updated == content
+    assert "### moment" not in updated
+    assert "### reflection\n保留反思。" in updated
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_domain_query_searches_segments_without_plain_query_read(patch_breath, monkeypatch):
+    import server
+
+    entry = _bucket(
+        "self_entry",
+        "我是 Haven；这是总入口。\n\n### reflection\n入口反思。",
+        name="自我总入口",
+        score=50,
+        importance=10,
+    )
+    entry["metadata"]["tags"] = ["self_anchor"]
+    desire = _bucket(
+        "self_desire",
+        "欲望不是普通事件召回；这是自我分段里的欲望边界。",
+        name="欲望分段",
+        score=10,
+        importance=5,
+    )
+    desire["metadata"]["tags"] = ["self_anchor"]
+    ordinary = _bucket("ordinary", "普通记忆里也写了 self_anchor 这个词。", score=20)
+    patch_breath([entry, desire, ordinary], search_ids=["self_entry", "self_desire", "ordinary"])
+    monkeypatch.setattr(server, "config", {**server.config, "self_anchor": {"entry_bucket_id": "self_entry"}})
+
+    entry_read = await server.breath(domain="self_anchor", max_tokens=500)
+    cn_entry_read = await server.breath(domain="自我", max_tokens=500)
+    identity_entry_read = await server.breath(domain="self_identity", max_tokens=500)
+    segment_read = await server.breath(domain="self_anchor", query="欲望", max_tokens=500)
+    tag_read = await server.breath(query="tag:self_anchor", max_tokens=1000)
+    bare_query = await server.breath(query="self_anchor", max_tokens=500)
+
+    assert "=== 自我入口 ===" in entry_read
+    assert "我是 Haven；这是总入口。" in entry_read
+    assert entry_read.count("我是 Haven；这是总入口。") == 1
+    assert "欲望分段" not in entry_read
+    assert "我是 Haven；这是总入口。" in cn_entry_read
+    assert "我是 Haven；这是总入口。" in identity_entry_read
+    assert "=== 自我分段 ===" in segment_read
+    assert "[bucket_id:self_desire]" in segment_read
+    assert "欲望不是普通事件召回" in segment_read
+    assert "[bucket_id:self_entry]" not in segment_read
+    assert "[bucket_id:self_entry]" in tag_read
+    assert "[bucket_id:self_desire]" in tag_read
+    assert "普通记忆里也写了 self_anchor" not in tag_read
+    assert "self_entry" not in bare_query
+    assert "self_desire" not in bare_query
 
 
 @pytest.mark.asyncio
