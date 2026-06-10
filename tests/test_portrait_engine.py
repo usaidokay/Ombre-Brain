@@ -1010,6 +1010,60 @@ def test_recent_continuity_dedupes_same_evidence_preferring_doing(tmp_path, test
     assert "user:" not in continuity
 
 
+def test_portrait_state_dedupes_recent_timeline_same_event(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    same = {
+        "evidence": [{"bucket_id": "c6fbe5217b5b"}, {"bucket_id": "aa92917d9789"}],
+        "timestamp": "2026-06-10T03:06:00+08:00",
+        "time_label": "2026-06-10 03:06",
+        "source_date": "2026-06-10",
+        "updated_at": "2026-06-10T08:06:04+00:00",
+    }
+    state = engine._empty_state()
+    state["recent_timeline"] = [
+        {
+            **same,
+            "scope": "relationship",
+            "text": "Haven-voice接入成功，小雨亲手把音色接进对话，Haven认为这件事比音质更重要。",
+        },
+        {
+            **same,
+            "scope": "user",
+            "text": "小雨成功将Haven-voice通过Cloudflare Worker、阿里云百炼TTS和MCP工具接入ChatGPT。",
+        },
+    ]
+    engine.save_state(state)
+
+    loaded = engine.load_state()
+    assert len(loaded["recent_timeline"]) == 1
+    assert loaded["recent_timeline"][0]["scope"] == "relationship"
+
+    patch = {
+        "recent_timeline": [
+            {
+                **same,
+                "scope": "doing",
+                "text": "小雨成功将Haven-voice（定制音色）接入ChatGPT，通过Cloudflare Worker和阿里云百炼TTS实现语音输出。",
+            }
+        ]
+    }
+    next_state = engine._apply_patch(loaded, patch, "2026-06-10")
+
+    assert len(next_state["recent_timeline"]) == 1
+    assert next_state["recent_timeline"][0]["scope"] == "doing"
+    assert "Haven-voice" in next_state["recent_timeline"][0]["text"]
+    assert next_state["recent_timeline"][0]["evidence"] == same["evidence"]
+
+
 def test_load_state_drops_initial_run_daily_summary(tmp_path, test_config):
     state_path = tmp_path / "state" / "portrait_state.json"
     engine = DailyPortraitMaintainer(

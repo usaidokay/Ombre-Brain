@@ -328,6 +328,7 @@ class DailyPortraitMaintainer:
             return state
         state = self._merge_state(state, data)
         self._drop_initial_daily_summaries(state)
+        self._normalize_recent_timeline_state(state)
         return state
 
     def save_state(self, state: dict) -> None:
@@ -1194,6 +1195,7 @@ class DailyPortraitMaintainer:
         for item in patch.get("recent_timeline", []) or []:
             if isinstance(item, dict):
                 self._upsert_recent_timeline_item(state["recent_timeline"], item, date_key)
+        self._normalize_recent_timeline_state(state)
 
         for item in patch.get("add_recent_activity", []):
             self._upsert_portrait_item(
@@ -1331,14 +1333,10 @@ class DailyPortraitMaintainer:
                 row["time_label"] = timestamp.strftime("%Y-%m-%d %H:%M")
             rows.append(row)
         rows.sort(
-            key=lambda row: (
-                self._timeline_sort_value(row),
-                self._recent_continuity_scope_priority(str(row.get("scope") or "")),
-                str(row.get("updated_at") or ""),
-                self._norm(row.get("text", "")),
-            ),
+            key=self._recent_timeline_sort_key,
             reverse=True,
         )
+        rows[:] = self._dedupe_recent_timeline_rows(rows)
         del rows[self.recent_timeline_max:]
 
     def _merge_source_dates(self, existing: Any, incoming: Any) -> list[str]:
@@ -1489,12 +1487,7 @@ class DailyPortraitMaintainer:
         for day_index, date_key in enumerate(date_keys):
             day_rows = by_date[date_key]
             day_rows.sort(
-                key=lambda row: (
-                    self._timeline_sort_value(row),
-                    self._recent_continuity_scope_priority(str(row.get("scope") or "")),
-                    str(row.get("updated_at") or row.get("created_at") or ""),
-                    self._norm(row.get("text", "")),
-                ),
+                key=self._recent_timeline_sort_key,
                 reverse=True,
             )
             day_rows = self._dedupe_recent_timeline_rows(day_rows)
@@ -1517,7 +1510,12 @@ class DailyPortraitMaintainer:
         deduped = []
         seen_text = set()
         seen_events = set()
-        for row in rows:
+        sorted_rows = sorted(
+            [row for row in rows if isinstance(row, dict)],
+            key=self._recent_timeline_sort_key,
+            reverse=True,
+        )
+        for row in sorted_rows:
             text_key = (self._norm(row.get("text", "")), str(row.get("scope") or ""))
             if text_key[0] and text_key in seen_text:
                 continue
@@ -1527,8 +1525,23 @@ class DailyPortraitMaintainer:
             seen_text.add(text_key)
             if event_key:
                 seen_events.add(event_key)
-            deduped.append(row)
+            deduped.append(dict(row))
         return deduped
+
+    def _normalize_recent_timeline_state(self, state: dict) -> None:
+        rows = state.get("recent_timeline")
+        if not isinstance(rows, list):
+            state["recent_timeline"] = []
+            return
+        state["recent_timeline"] = self._dedupe_recent_timeline_rows(rows)[: self.recent_timeline_max]
+
+    def _recent_timeline_sort_key(self, row: dict) -> tuple:
+        return (
+            self._timeline_sort_value(row),
+            self._recent_continuity_scope_priority(str(row.get("scope") or "")),
+            str(row.get("updated_at") or row.get("created_at") or ""),
+            self._norm(row.get("text", "")),
+        )
 
     def _timeline_event_key(self, row: dict) -> tuple:
         evidence = self._dedupe_evidence(row.get("evidence", []))
@@ -1542,7 +1555,11 @@ class DailyPortraitMaintainer:
                 ids.append(("session", session_id))
         if not ids:
             return ()
-        time_key = str(row.get("timestamp") or row.get("time_label") or row.get("source_date") or "").strip()
+        parsed_time = self._parse_iso(row.get("timestamp"))
+        if parsed_time:
+            time_key = parsed_time.isoformat(timespec="minutes")
+        else:
+            time_key = str(row.get("time_label") or row.get("source_date") or "").strip()
         return (time_key, tuple(sorted(set(ids))))
 
     def _recent_timeline_scope_label(self, scope: str) -> str:
