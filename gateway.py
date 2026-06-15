@@ -3168,21 +3168,29 @@ class GatewayService:
             return [assistant_message]
 
         output: list[dict[str, Any]] = []
-        pending_text: list[str] = []
+        pending_blocks: list[dict[str, Any]] = []
         for block_index, block in enumerate(content):
             if isinstance(block, str):
-                pending_text.append(block)
+                self._append_openai_text_block(pending_blocks, block)
                 continue
             if not isinstance(block, dict):
                 raise ValueError(f"messages[{index}].content[{block_index}] must be an object")
             block_type = block.get("type")
             if block_type == "text":
-                pending_text.append(str(block.get("text") or ""))
+                self._append_openai_text_block(pending_blocks, str(block.get("text") or ""))
+                continue
+            if block_type == "image":
+                pending_blocks.append(
+                    self._anthropic_image_block_to_openai(
+                        block,
+                        f"messages[{index}].content[{block_index}]",
+                    )
+                )
                 continue
             if block_type == "tool_result":
-                if pending_text:
-                    output.append({"role": "user", "content": "\n".join(part for part in pending_text if part)})
-                    pending_text = []
+                if pending_blocks:
+                    output.append({"role": "user", "content": self._openai_user_content_from_blocks(pending_blocks)})
+                    pending_blocks = []
                 tool_use_id = str(block.get("tool_use_id") or "")
                 if not tool_use_id:
                     raise ValueError(f"messages[{index}].content[{block_index}] tool_result requires tool_use_id")
@@ -3199,8 +3207,8 @@ class GatewayService:
                 continue
             raise ValueError(f"messages[{index}].content[{block_index}] unsupported user block type")
 
-        if pending_text or not output:
-            output.append({"role": "user", "content": "\n".join(part for part in pending_text if part)})
+        if pending_blocks or not output:
+            output.append({"role": "user", "content": self._openai_user_content_from_blocks(pending_blocks)})
         return output
 
     def _anthropic_tools_to_openai(self, tools: Any) -> list[dict[str, Any]]:
@@ -3247,6 +3255,46 @@ class GatewayService:
                 raise ValueError("tool_choice.name is required when type is tool")
             return {"type": "function", "function": {"name": name}}
         return None
+
+    def _append_openai_text_block(self, blocks: list[dict[str, Any]], text: str) -> None:
+        text = str(text or "")
+        if not text:
+            return
+        if blocks and blocks[-1].get("type") == "text":
+            blocks[-1]["text"] = "\n".join(part for part in (blocks[-1].get("text"), text) if part)
+            return
+        blocks.append({"type": "text", "text": text})
+
+    def _openai_user_content_from_blocks(self, blocks: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+        if not blocks:
+            return ""
+        if all(block.get("type") == "text" for block in blocks):
+            return "\n".join(str(block.get("text") or "") for block in blocks if block.get("text"))
+        return blocks
+
+    def _anthropic_image_block_to_openai(self, block: dict[str, Any], field_name: str) -> dict[str, Any]:
+        source = block.get("source")
+        if not isinstance(source, dict):
+            raise ValueError(f"{field_name}.source must be an object")
+
+        source_type = str(source.get("type") or "").strip()
+        if source_type == "base64":
+            media_type = str(source.get("media_type") or "").strip()
+            data = str(source.get("data") or "").strip()
+            if not media_type or not data:
+                raise ValueError(f"{field_name}.source requires media_type and data")
+            return {
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{data}"},
+            }
+
+        if source_type == "url":
+            url = str(source.get("url") or "").strip()
+            if not url:
+                raise ValueError(f"{field_name}.source.url is required")
+            return {"type": "image_url", "image_url": {"url": url}}
+
+        raise ValueError(f"{field_name}.source.type must be base64 or url")
 
     def _anthropic_content_to_text(self, content: Any, field_name: str) -> str:
         if content is None:

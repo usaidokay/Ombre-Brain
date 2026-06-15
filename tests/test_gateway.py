@@ -1018,6 +1018,51 @@ def test_gateway_defaults_anthropic_session_id(monkeypatch, test_config, bucket_
     assert state_store.get_recent_bucket_ids("xiaoyu-main", 5) == set()
 
 
+def test_gateway_maps_anthropic_image_blocks(monkeypatch, test_config, bucket_mgr):
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, upstream_default_model="qwen3.5-plus"),
+        bucket_mgr,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": "gateway-secret"},
+            json={
+                "model": "qwen3.5-plus",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "这张图是什么？"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": "iVBORw0KGgo=",
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "max_tokens": 128,
+            },
+        )
+
+    assert response.status_code == 200
+    forwarded_content = captured[0]["json"]["messages"][-1]["content"]
+    assert isinstance(forwarded_content, list)
+    assert forwarded_content[0]["type"] == "text"
+    assert "Long-term State Summary" in forwarded_content[0]["text"]
+    assert forwarded_content[1] == {"type": "text", "text": "这张图是什么？"}
+    assert forwarded_content[2] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+    }
+
+
 def test_gateway_maps_anthropic_tool_use(monkeypatch, test_config, bucket_mgr):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_UPSTREAM_API_KEY", "upstream-secret")
