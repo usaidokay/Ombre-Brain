@@ -2181,6 +2181,13 @@
 <div class="content" id="list-view">
   <div class="filters" id="filters"></div>
   <div class="bucket-tools" id="bucket-bulk-toolbar">
+    <select id="bucket-sort" onchange="changeBucketSort(this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;">
+      <option value="newest">从新到旧</option>
+      <option value="oldest">从旧到新</option>
+      <option value="importance">按重要程度</option>
+      <option value="score">按活跃分数</option>
+      <option value="last_active">最近活跃</option>
+    </select>
     <button type="button" id="bucket-bulk-toggle" onclick="toggleBucketBulkMode()">批量选择</button>
     <button type="button" class="bulk-hidden" data-bulk-action="select-current" onclick="selectCurrentBuckets()">全选当前筛选</button>
     <button type="button" class="bulk-hidden" data-bulk-action="clear" onclick="clearBucketSelection()">清空</button>
@@ -2912,6 +2919,7 @@ let anchorProposals = [];
 let wordMapData = null;
 let identitySemanticData = null;
 let currentFilter = 'all';
+let currentSort = 'newest';
 let bucketBulkMode = false;
 let selectedBucketIds = new Set();
 let dashboardCommentAuthor = 'Rain';
@@ -3057,7 +3065,7 @@ document.getElementById('search-input').addEventListener('input', (e) => {
   const q = e.target.value.trim();
   searchTimer = setTimeout(() => {
     if (q) searchBuckets(q);
-    else renderBuckets(filterBuckets(allBuckets));
+    else renderBuckets(sortBuckets(filterBuckets(allBuckets)));
   }, 300);
 });
 
@@ -3075,7 +3083,7 @@ async function loadBuckets(options) {
         selectedBucketIds.delete(id);
       }
     });
-    renderBuckets(filterBuckets(allBuckets));
+    renderBuckets(sortBuckets(filterBuckets(allBuckets)));
     if (getActiveTab() === 'reflection') renderReflectionReview();
     if (getActiveTab() === 'dreams') loadDreams();
     if (getActiveTab() === 'profile' && !options.skipProfileRefresh) {
@@ -4234,8 +4242,29 @@ function buildFilters() {
     filters.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
     btn.classList.add('active');
     currentFilter = btn.dataset.filter;
-    renderBuckets(filterBuckets(allBuckets));
+    renderBuckets(sortBuckets(filterBuckets(allBuckets)));
   };
+}
+
+function sortBuckets(buckets) {
+  var sorted = buckets.slice();
+  if (currentSort === 'newest') {
+    sorted.sort(function(a, b) { return (b.created || '').localeCompare(a.created || ''); });
+  } else if (currentSort === 'oldest') {
+    sorted.sort(function(a, b) { return (a.created || '').localeCompare(b.created || ''); });
+  } else if (currentSort === 'importance') {
+    sorted.sort(function(a, b) { return (b.importance || 0) - (a.importance || 0); });
+  } else if (currentSort === 'score') {
+    sorted.sort(function(a, b) { return (b.score || 0) - (a.score || 0); });
+  } else if (currentSort === 'last_active') {
+    sorted.sort(function(a, b) { return (b.last_active || '').localeCompare(a.last_active || ''); });
+  }
+  return sorted;
+}
+
+function changeBucketSort(value) {
+  currentSort = value;
+  renderBuckets(sortBuckets(filterBuckets(allBuckets)));
 }
 
 function filterBuckets(buckets) {
@@ -4316,7 +4345,7 @@ function toggleBucketBulkMode() {
     selectedBucketIds.clear();
     setBucketBulkMessage('');
   }
-  renderBuckets(renderedBuckets.length ? renderedBuckets : filterBuckets(allBuckets));
+  renderBuckets(renderedBuckets.length ? renderedBuckets : sortBuckets(filterBuckets(allBuckets)));
 }
 
 function toggleBucketSelection(id) {
