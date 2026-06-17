@@ -246,6 +246,27 @@
     color: #6F3333;
     border-color: rgba(139, 74, 74, 0.58);
   }
+  .bucket-tools select {
+    min-height: 34px;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23847a6e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+  }
+  .bucket-tools select:hover {
+    border-color: var(--border-strong);
+    color: var(--accent);
+  }
   .bucket-tools .bulk-hidden { display: none; }
   .bucket-bulk-status {
     font-size: 12px;
@@ -2181,7 +2202,7 @@
 <div class="content" id="list-view">
   <div class="filters" id="filters"></div>
   <div class="bucket-tools" id="bucket-bulk-toolbar">
-    <select id="bucket-sort" onchange="changeBucketSort(this.value)" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;">
+    <select id="bucket-sort" onchange="changeBucketSort(this.value)">
       <option value="newest">从新到旧</option>
       <option value="oldest">从旧到新</option>
       <option value="importance">按重要程度</option>
